@@ -174,7 +174,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     FILTER_PID
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0;
+    u64 rx_b = 0, tx_b = 0, sport = 0, rtt_us = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
