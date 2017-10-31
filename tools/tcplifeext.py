@@ -315,7 +315,7 @@ def print_ipv4_event(cpu, data, size):
         inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
         event.tx_b / 1024,
         event.rx_b / 1024,
-        float(event.span_us) / 1000),
+        float(event.span_us) / 1000,
         123)
 
 def print_ipv6_event(cpu, data, size):
@@ -340,7 +340,7 @@ def print_ipv6_event(cpu, data, size):
         inet_ntop(AF_INET6, event.daddr), event.ports & 0xffffffff,
         event.tx_b / 1024,
         event.rx_b / 1024,
-        float(event.span_us) / 1000),
+        float(event.span_us) / 1000,
         123)
 
 # initialize BPF
