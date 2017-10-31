@@ -316,7 +316,7 @@ def print_ipv4_event(cpu, data, size):
         event.tx_b / 1024,
         event.rx_b / 1024,
         float(event.span_us) / 1000,
-        123)
+        123))
 
 def print_ipv6_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
@@ -341,7 +341,7 @@ def print_ipv6_event(cpu, data, size):
         event.tx_b / 1024,
         event.rx_b / 1024,
         float(event.span_us) / 1000,
-        123)
+        123))
 
 # initialize BPF
 b = BPF(text=bpf_text)
