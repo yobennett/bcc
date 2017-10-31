@@ -82,6 +82,7 @@ struct ipv4_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
+    u64 rtt_us;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -95,6 +96,7 @@ struct ipv6_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
+    u64 rtt_us;
 };
 BPF_PERF_OUTPUT(ipv6_events);
 
@@ -255,7 +257,8 @@ class Data_ipv4(ct.Structure):
         ("rx_b", ct.c_ulonglong),
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN)
+        ("task", ct.c_char * TASK_COMM_LEN),
+        ("rtt_us", ct.c_ulonglong),
     ]
 
 class Data_ipv6(ct.Structure):
@@ -268,7 +271,8 @@ class Data_ipv6(ct.Structure):
         ("rx_b", ct.c_ulonglong),
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN)
+        ("task", ct.c_char * TASK_COMM_LEN),
+        ("rtt_us", ct.c_ulonglong),
     ]
 
 #
@@ -279,8 +283,8 @@ class Data_ipv6(ct.Structure):
 # need to add columns, columns that solve real actual problems, I'd start by
 # adding an extended mode (-x) to included those columns.
 #
-header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %s"
-format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %.2f"
+header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %s %s"
+format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %.2f %.2f"
 if args.wide:
     header_string = "%-5s %-16.16s %-2s %-26s %-5s %-26s %-5s %6s %6s %s"
     format_string = "%-5d %-16.16s %-2s %-26s %-5s %-26s %-5d %6d %6d %.2f"
@@ -309,7 +313,10 @@ def print_ipv4_event(cpu, data, size):
         "4" if args.wide or args.csv else "",
         inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-        event.tx_b / 1024, event.rx_b / 1024, float(event.span_us) / 1000))
+        event.tx_b / 1024,
+        event.rx_b / 1024,
+        float(event.span_us) / 1000),
+        123)
 
 def print_ipv6_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
@@ -331,7 +338,10 @@ def print_ipv6_event(cpu, data, size):
         "6" if args.wide or args.csv else "",
         inet_ntop(AF_INET6, event.saddr), event.ports >> 32,
         inet_ntop(AF_INET6, event.daddr), event.ports & 0xffffffff,
-        event.tx_b / 1024, event.rx_b / 1024, float(event.span_us) / 1000))
+        event.tx_b / 1024,
+        event.rx_b / 1024,
+        float(event.span_us) / 1000),
+        123)
 
 # initialize BPF
 b = BPF(text=bpf_text)
@@ -347,9 +357,9 @@ if args.timestamp:
         print("%s," % ("TIME(s)"), end="")
     else:
         print("%-9s " % ("TIME(s)"), end="")
-print(header_string % ("*PID", "COMM",
+print(header_string % ("PID", "COMM",
     "IP" if args.wide or args.csv else "", "LADDR",
-    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS"))
+    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", "RTT"))
 
 start_ts = 0
 
