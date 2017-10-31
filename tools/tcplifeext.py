@@ -178,7 +178,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
-    rtt_us = tp->rtt;
+    rtt_us = tp->rttvar_us;
 
     u16 family = sk->__sk_common.skc_family;
 
