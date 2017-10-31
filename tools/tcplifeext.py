@@ -178,12 +178,13 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
+    rtt_us = tp->rtt;
 
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {.span_us = delta_us,
-            .rx_b = rx_b, .tx_b = tx_b};
+            .rx_b = rx_b, .tx_b = tx_b, .rtt_us = rtt_us};
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
@@ -316,7 +317,7 @@ def print_ipv4_event(cpu, data, size):
         event.tx_b / 1024,
         event.rx_b / 1024,
         float(event.span_us) / 1000,
-        123))
+        float(event.rtt_us)))
 
 def print_ipv6_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
