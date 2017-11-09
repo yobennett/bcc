@@ -178,7 +178,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
-    rtt_us = tp->rttvar_us;
+    rtt_us = tp->srtt_us >> 3;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -284,14 +284,14 @@ class Data_ipv6(ct.Structure):
 # need to add columns, columns that solve real actual problems, I'd start by
 # adding an extended mode (-x) to included those columns.
 #
-header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %s %s"
-format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %.2f %.2f"
-if args.wide:
-    header_string = "%-5s %-16.16s %-2s %-26s %-5s %-26s %-5s %6s %6s %s"
-    format_string = "%-5d %-16.16s %-2s %-26s %-5s %-26s %-5d %6d %6d %.2f"
-if args.csv:
-    header_string = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
-    format_string = "%d,%s,%s,%s,%s,%s,%d,%d,%d,%.2f"
+header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %-10.5s %-10.5s"
+format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %-10.2f %-10.2f"
+#if args.wide:
+#    header_string = "%-5s %-16.16s %-2s %-26s %-5s %-26s %-5s %6s %6s %s"
+#    format_string = "%-5d %-16.16s %-2s %-26s %-5s %-26s %-5d %6d %6d %.2f"
+#if args.csv:
+#    header_string = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
+#    format_string = "%d,%s,%s,%s,%s,%s,%d,%d,%d,%.2f"
 
 # process event
 def print_ipv4_event(cpu, data, size):
@@ -317,7 +317,7 @@ def print_ipv4_event(cpu, data, size):
         event.tx_b / 1024,
         event.rx_b / 1024,
         float(event.span_us) / 1000,
-        float(event.rtt_us)))
+        float(event.rtt_us) / 1000))
 
 def print_ipv6_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
@@ -360,7 +360,7 @@ if args.timestamp:
         print("%-9s " % ("TIME(s)"), end="")
 print(header_string % ("PID", "COMM",
     "IP" if args.wide or args.csv else "", "LADDR",
-    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", "RTT"))
+    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", "SRTT"))
 
 start_ts = 0
 
