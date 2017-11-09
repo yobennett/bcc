@@ -82,7 +82,10 @@ struct ipv4_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
-    u64 rtt_us;
+    u64 srtt_us;
+    u64 mdev_us;
+    u64 mdev_max_us;
+    u64 rttvar_us;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -96,7 +99,10 @@ struct ipv6_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
-    u64 rtt_us;
+    u64 srtt_us;
+    u64 mdev_us;
+    u64 mdev_max_us;
+    u64 rttvar_us;
 };
 BPF_PERF_OUTPUT(ipv6_events);
 
@@ -174,17 +180,21 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     FILTER_PID
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0, rtt_us = 0;
+    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us = 0, mdev_us = 0, mdev_max_us = 0, rttvar_us = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
-    rtt_us = tp->srtt_us >> 3;
+    srtt_us = tp->srtt_us >> 3;
+    mdev_us = tp->mdev_us;
+    mdev_max_us = tp->mdev_max_us;
+    rttvar_us = tp->rttvar_us;
 
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {.span_us = delta_us,
-            .rx_b = rx_b, .tx_b = tx_b, .rtt_us = rtt_us};
+            .rx_b = rx_b, .tx_b = tx_b, 
+            .srtt_us = srtt_us, .mdev_us = mdev_us, .mdev_max_us = mdev_max_us, .rttvar_us = rttvar_us};
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
@@ -259,7 +269,10 @@ class Data_ipv4(ct.Structure):
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
         ("task", ct.c_char * TASK_COMM_LEN),
-        ("rtt_us", ct.c_ulonglong),
+        ("srtt_us", ct.c_ulonglong),
+        ("mdev_us", ct.c_ulonglong),
+        ("mdev_max_us", ct.c_ulonglong),
+        ("rttvar_us", ct.c_ulonglong)
     ]
 
 class Data_ipv6(ct.Structure):
@@ -273,7 +286,10 @@ class Data_ipv6(ct.Structure):
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
         ("task", ct.c_char * TASK_COMM_LEN),
-        ("rtt_us", ct.c_ulonglong),
+        ("srtt_us", ct.c_ulonglong),
+        ("mdev_us", ct.c_ulonglong),
+        ("mdev_max_us", ct.c_ulonglong),
+        ("rttvar_us", ct.c_ulonglong)
     ]
 
 #
@@ -284,8 +300,8 @@ class Data_ipv6(ct.Structure):
 # need to add columns, columns that solve real actual problems, I'd start by
 # adding an extended mode (-x) to included those columns.
 #
-header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %-10.5s %-10.5s"
-format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %-10.2f %-10.2f"
+header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %-10.5s %-10.5s %-10.5s %-10.7s %-10.6s"
+format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %-10.2f %-10.2f %-10.2f %-10.2f %-10.2f"
 #if args.wide:
 #    header_string = "%-5s %-16.16s %-2s %-26s %-5s %-26s %-5s %6s %6s %s"
 #    format_string = "%-5d %-16.16s %-2s %-26s %-5s %-26s %-5d %6d %6d %.2f"
@@ -317,7 +333,10 @@ def print_ipv4_event(cpu, data, size):
         event.tx_b / 1024,
         event.rx_b / 1024,
         float(event.span_us) / 1000,
-        float(event.rtt_us) / 1000))
+        float(event.srtt_us) / 1000,
+        float(event.mdev_us) / 1000,
+        float(event.mdev_max_us) / 1000,
+        float(event.rttvar_us) / 1000))
 
 def print_ipv6_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
@@ -360,7 +379,8 @@ if args.timestamp:
         print("%-9s " % ("TIME(s)"), end="")
 print(header_string % ("PID", "COMM",
     "IP" if args.wide or args.csv else "", "LADDR",
-    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", "SRTT"))
+    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", 
+    "SRTT", "MDEV", "MDEVMAX", "RTTVAR"))
 
 start_ts = 0
 
