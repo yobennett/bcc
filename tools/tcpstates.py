@@ -84,11 +84,27 @@ class Data_ipv4(ct.Structure):
     ]
 
 
+def tcp_state(state):
+    return {
+        0: "invalid",
+        1: "ESTABLISHED",
+        2: "SYN_SENT",
+        3: "SYN_RECV",
+        4: "FIN_WAIT1",
+        5: "FIN_WAIT2",
+        6: "TIME_WAIT",
+        7: "CLOSE",
+        8: "CLOSE_WAIT",
+        9: "LAST_ACK",
+        10: "LISTEN",
+        11: "CLOSING",
+    }[state]
+
 #
 # Setup output formats
 #
-header_string = "%-15s %-5s %-15s %-5s %5s"
-format_string = "%-15s %-5d %-15s %-5d %5d"
+header_string = "%-15s %-5s %-15s %-5s %15s"
+format_string = "%-15s %-5d %-15s %-5d %15s"
 
 # process event
 def print_ipv4_event(cpu, data, size):
@@ -96,7 +112,7 @@ def print_ipv4_event(cpu, data, size):
     print(format_string % (
         inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-        event.state))
+        tcp_state(event.state)))
 
 # initialize BPF
 b = BPF(text=bpf_text)
