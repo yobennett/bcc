@@ -54,6 +54,8 @@ struct ipv4_summary_data_t {
     u64 ports;
     u64 bytes_received;
     u64 bytes_acked;
+    u64 srtt_us;
+    u64 rttvar_us;
 };
 BPF_PERF_OUTPUT(ipv4_summary_events);
 
@@ -66,10 +68,12 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     u16 dport = sk->__sk_common.skc_dport;
 
     // get throughput stats. see tcp_get_info().
-    u64 bytes_received = 0, bytes_acked = 0;
+    u64 bytes_received = 0, bytes_acked = 0, srtt_us = 0, rttvar_us = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     bytes_received = tp->bytes_received;
     bytes_acked = tp->bytes_acked;
+    srtt_us = tp->srtt_us;
+    rttvar_us = tp->rttvar_us;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -106,6 +110,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         summary4.ports = ntohs(dport) + ((0ULL + lport) << 32);
         summary4.bytes_received = bytes_received;
         summary4.bytes_acked = bytes_acked;
+        summary4.srtt_us = srtt_us >> 3;
+        summary4.rttvar_us = rttvar_us;
         ipv4_summary_events.perf_submit(ctx, &summary4, sizeof(summary4));
     }
 
@@ -132,7 +138,9 @@ class Data_ipv4_summary(ct.Structure):
         ("daddr", ct.c_ulonglong),
         ("ports", ct.c_ulonglong),
         ("bytes_received", ct.c_ulonglong),
-        ("bytes_acked", ct.c_ulonglong)
+        ("bytes_acked", ct.c_ulonglong),
+        ("srtt_us", ct.c_ulonglong),
+        ("rttvar_us", ct.c_ulonglong)
     ]
 
 def tcp_state(state):
@@ -167,10 +175,11 @@ def print_ipv4_event(cpu, data, size):
 
 def print_ipv4_summary_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv4_summary)).contents
-    print("\n{}:{} {}:{} {}b {}b\n".format(
+    print("\n{}:{} {}:{} {}b {}b {}ms {}ms\n".format(
         inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-        event.bytes_received, event.bytes_acked))
+        event.bytes_received, event.bytes_acked,
+        float(event.srtt_us) / 1000, float(event.rttvar_us) / 1000))
 
 # initialize BPF
 b = BPF(text=bpf_text)
