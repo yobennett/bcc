@@ -36,11 +36,14 @@ bpf_text = """
 #include <net/sock.h>
 #include <bcc/proto.h>
 
+BPF_HASH(states, struct sock *, int);
+
 // separate data structs for ipv4 and ipv6
 struct ipv4_data_t {
     u64 saddr;
     u64 daddr;
     u64 ports;
+    u64 prev_state;
     u64 state;
 };
 BPF_PERF_OUTPUT(ipv4_events);
@@ -58,13 +61,37 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
     u16 family = sk->__sk_common.skc_family;
 
+    // get previous state
+    int *prev_state;
+    prev_state = states.lookup(&sk);
+
+    // update new state
+    states.update(&sk, &state);
+
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {};
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
         data4.ports = ntohs(dport) + ((0ULL + lport) << 32);
+  
+        if (prev_state == 0) {
+            data4.prev_state = 0;
+        } else {
+            data4.prev_state = *prev_state;
+        }
+
         data4.state = state;
+    if (prev_state == 0) {
+        
+    } else {
+    }
+
         ipv4_events.perf_submit(ctx, &data4, sizeof(data4));
+    }
+
+    // reset state tracker for closed sockets
+    if (state == TCP_CLOSE) {
+        states.delete(&sk);
     }
 
     return 0;
@@ -80,6 +107,7 @@ class Data_ipv4(ct.Structure):
         ("saddr", ct.c_ulonglong),
         ("daddr", ct.c_ulonglong),
         ("ports", ct.c_ulonglong),
+        ("prev_state", ct.c_ulonglong),
         ("state", ct.c_ulonglong)
     ]
 
@@ -103,8 +131,8 @@ def tcp_state(state):
 #
 # Setup output formats
 #
-header_string = "%-15s %-5s %-15s %-5s %15s"
-format_string = "%-15s %-5d %-15s %-5d %15s"
+header_string = "%-15s %-5s %-15s %-5s %15s %15s"
+format_string = "%-15s %-5d %-15s %-5d %15s %15s"
 
 # process event
 def print_ipv4_event(cpu, data, size):
@@ -112,13 +140,13 @@ def print_ipv4_event(cpu, data, size):
     print(format_string % (
         inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-        tcp_state(event.state)))
+        tcp_state(event.prev_state), tcp_state(event.state)))
 
 # initialize BPF
 b = BPF(text=bpf_text)
 
 # header
-print(header_string % ("LADDR", "LPORT", "RADDR", "RPORT", "STATE"))
+print(header_string % ("LADDR", "LPORT", "RADDR", "RPORT", "PSTATE", "STATE"))
 
 # read events
 b["ipv4_events"].open_perf_buffer(print_ipv4_event, page_cnt=64)
