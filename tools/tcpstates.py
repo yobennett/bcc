@@ -81,6 +81,13 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     int *prev_state;
     prev_state = states.lookup(&sk);
 
+    // early return if no state change
+    /*
+    if (prev_state != 0 && prev_state == state) {
+        return 0;
+    }
+    */
+
     // update new state
     states.update(&sk, &state);
 
