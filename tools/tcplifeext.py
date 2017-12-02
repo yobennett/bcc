@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # @lint-avoid-python-3-compatibility-imports
 #
-# tcplife   Trace the lifespan of TCP sessions and summarize.
-#           For Linux, uses BCC, BPF. Embedded C.
+# tcplifeext    Trace the lifespan of TCP sessions and summarize.
+#               For Linux, uses BCC, BPF. Embedded C.
 #
 # USAGE: tcplifeext [-h] [-C] [-S] [-p PID] [interval [count]]
 #
@@ -26,37 +26,17 @@ import argparse
 from socket import inet_ntop, ntohs, AF_INET, AF_INET6
 from struct import pack
 import ctypes as ct
+import tempfile
 from time import strftime
 
 # arguments
 examples = """examples:
     ./tcplifeext           # trace all TCP connect()s
-    ./tcplifeext -t        # include time column (HH:MM:SS)
-    ./tcplifeext -w        # wider colums (fit IPv6)
-    ./tcplifeext -stT      # csv output, with times & timestamps
-    ./tcplifeext -p 181    # only trace PID 181
-    ./tcplifeext -L 80     # only trace local port 80
-    ./tcplifeext -L 80,81  # only trace local ports 80 and 81
-    ./tcplifeext -D 80     # only trace remote port 80
 """
 parser = argparse.ArgumentParser(
     description="Trace the lifespan of TCP sessions and summarize",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=examples)
-parser.add_argument("-T", "--time", action="store_true",
-    help="include time column on output (HH:MM:SS)")
-parser.add_argument("-t", "--timestamp", action="store_true",
-    help="include timestamp on output (seconds)")
-parser.add_argument("-w", "--wide", action="store_true",
-    help="wide column output (fits IPv6 addresses)")
-parser.add_argument("-s", "--csv", action="store_true",
-    help="comma separated values output")
-parser.add_argument("-p", "--pid",
-    help="trace this PID only")
-parser.add_argument("-L", "--localport",
-    help="comma-separated list of local ports to trace.")
-parser.add_argument("-D", "--remoteport",
-    help="comma-separated list of remote ports to trace.")
 args = parser.parse_args()
 debug = 0
 
@@ -82,29 +62,8 @@ struct ipv4_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
-    u64 srtt_us;
-    u64 mdev_us;
-    u64 mdev_max_us;
-    u64 rttvar_us;
 };
 BPF_PERF_OUTPUT(ipv4_events);
-
-struct ipv6_data_t {
-    u64 ts_us;
-    u64 pid;
-    unsigned __int128 saddr;
-    unsigned __int128 daddr;
-    u64 ports;
-    u64 rx_b;
-    u64 tx_b;
-    u64 span_us;
-    char task[TASK_COMM_LEN];
-    u64 srtt_us;
-    u64 mdev_us;
-    u64 mdev_max_us;
-    u64 rttvar_us;
-};
-BPF_PERF_OUTPUT(ipv6_events);
 
 struct id_t {
     u32 pid;
@@ -118,11 +77,9 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
     // lport is either used in a filter here, or later
     u16 lport = sk->__sk_common.skc_num;
-    FILTER_LPORT
 
     // dport is either used in a filter here, or later
     u16 dport = sk->__sk_common.skc_dport;
-    FILTER_DPORT
 
     /*
      * This tool includes PID and comm context. It's best effort, and may
@@ -153,7 +110,6 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     // record PID & comm on SYN_SENT
     if (state == TCP_SYN_SENT || state == TCP_LAST_ACK) {
         // now we can PID filter, both here and a little later on for CLOSE
-        FILTER_PID
         struct id_t me = {.pid = pid};
         bpf_get_current_comm(&me.task, sizeof(me.task));
         whoami.update(&sk, &me);
@@ -177,24 +133,18 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     mep = whoami.lookup(&sk);
     if (mep != 0)
         pid = mep->pid;
-    FILTER_PID
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us = 0, mdev_us = 0, mdev_max_us = 0, rttvar_us = 0;
+    u64 rx_b = 0, tx_b = 0, sport = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
-    srtt_us = tp->srtt_us >> 3;
-    mdev_us = tp->mdev_us;
-    mdev_max_us = tp->mdev_max_us;
-    rttvar_us = tp->rttvar_us;
 
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {.span_us = delta_us,
-            .rx_b = rx_b, .tx_b = tx_b, 
-            .srtt_us = srtt_us, .mdev_us = mdev_us, .mdev_max_us = mdev_max_us, .rttvar_us = rttvar_us};
+            .rx_b = rx_b, .tx_b = tx_b};
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
@@ -209,22 +159,6 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         ipv4_events.perf_submit(ctx, &data4, sizeof(data4));
 
     } else /* 6 */ {
-        struct ipv6_data_t data6 = {.span_us = delta_us,
-            .rx_b = rx_b, .tx_b = tx_b};
-        data6.ts_us = bpf_ktime_get_ns() / 1000;
-        bpf_probe_read(&data6.saddr, sizeof(data6.saddr),
-            sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
-        bpf_probe_read(&data6.daddr, sizeof(data6.daddr),
-            sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
-        // a workaround until data6 compiles with separate lport/dport
-        data6.ports = ntohs(dport) + ((0ULL + lport) << 32);
-        data6.pid = pid;
-        if (mep == 0) {
-            bpf_get_current_comm(&data6.task, sizeof(data6.task));
-        } else {
-            bpf_probe_read(&data6.task, sizeof(data6.task), (void *)mep->task);
-        }
-        ipv6_events.perf_submit(ctx, &data6, sizeof(data6));
     }
 
     if (mep != 0)
@@ -233,24 +167,6 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     return 0;
 }
 """
-
-# code substitutions
-if args.pid:
-    bpf_text = bpf_text.replace('FILTER_PID',
-        'if (pid != %s) { return 0; }' % args.pid)
-if args.remoteport:
-    dports = [int(dport) for dport in args.remoteport.split(',')]
-    dports_if = ' && '.join(['dport != %d' % ntohs(dport) for dport in dports])
-    bpf_text = bpf_text.replace('FILTER_DPORT',
-        'if (%s) { birth.delete(&sk); return 0; }' % dports_if)
-if args.localport:
-    lports = [int(lport) for lport in args.localport.split(',')]
-    lports_if = ' && '.join(['lport != %d' % lport for lport in lports])
-    bpf_text = bpf_text.replace('FILTER_LPORT',
-        'if (%s) { birth.delete(&sk); return 0; }' % lports_if)
-bpf_text = bpf_text.replace('FILTER_PID', '')
-bpf_text = bpf_text.replace('FILTER_DPORT', '')
-bpf_text = bpf_text.replace('FILTER_LPORT', '')
 
 if debug:
     print(bpf_text)
@@ -268,28 +184,7 @@ class Data_ipv4(ct.Structure):
         ("rx_b", ct.c_ulonglong),
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN),
-        ("srtt_us", ct.c_ulonglong),
-        ("mdev_us", ct.c_ulonglong),
-        ("mdev_max_us", ct.c_ulonglong),
-        ("rttvar_us", ct.c_ulonglong)
-    ]
-
-class Data_ipv6(ct.Structure):
-    _fields_ = [
-        ("ts_us", ct.c_ulonglong),
-        ("pid", ct.c_ulonglong),
-        ("saddr", (ct.c_ulonglong * 2)),
-        ("daddr", (ct.c_ulonglong * 2)),
-        ("ports", ct.c_ulonglong),
-        ("rx_b", ct.c_ulonglong),
-        ("tx_b", ct.c_ulonglong),
-        ("span_us", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN),
-        ("srtt_us", ct.c_ulonglong),
-        ("mdev_us", ct.c_ulonglong),
-        ("mdev_max_us", ct.c_ulonglong),
-        ("rttvar_us", ct.c_ulonglong)
+        ("task", ct.c_char * TASK_COMM_LEN)
     ]
 
 #
@@ -300,92 +195,26 @@ class Data_ipv6(ct.Structure):
 # need to add columns, columns that solve real actual problems, I'd start by
 # adding an extended mode (-x) to included those columns.
 #
-header_string = "%-5s %-10.10s %s%-15s %-5s %-15s %-5s %5s %5s %-10.5s %-10.5s %-10.5s %-10.7s %-10.6s"
-format_string = "%-5d %-10.10s %s%-15s %-5d %-15s %-5d %5d %5d %-10.2f %-10.2f %-10.2f %-10.2f %-10.2f"
-#if args.wide:
-#    header_string = "%-5s %-16.16s %-2s %-26s %-5s %-26s %-5s %6s %6s %s"
-#    format_string = "%-5d %-16.16s %-2s %-26s %-5s %-26s %-5d %6d %6d %.2f"
-#if args.csv:
-#    header_string = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
-#    format_string = "%d,%s,%s,%s,%s,%s,%d,%d,%d,%.2f"
+format_string = "pid=%d task=%s saddr=%s sport=%d daddr=%s dport=%d tx=%d rx=%d span_us=%.2f\n"
 
 # process event
 def print_ipv4_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv4)).contents
     global start_ts
-    if args.time:
-        if args.csv:
-            print("%s," % strftime("%H:%M:%S"), end="")
-        else:
-            print("%-8s " % strftime("%H:%M:%S"), end="")
-    if args.timestamp:
-        if start_ts == 0:
-            start_ts = event.ts_us
-        delta_s = (float(event.ts_us) - start_ts) / 1000000
-        if args.csv:
-            print("%.6f," % delta_s, end="")
-        else:
-            print("%-9.6f " % delta_s, end="")
-    print(format_string % (event.pid, event.task.decode(),
-        "4" if args.wide or args.csv else "",
-        inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
-        inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-        event.tx_b / 1024,
-        event.rx_b / 1024,
-        float(event.span_us) / 1000,
-        float(event.srtt_us) / 1000,
-        float(event.mdev_us) / 1000,
-        float(event.mdev_max_us) / 1000,
-        float(event.rttvar_us) / 1000))
-
-def print_ipv6_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
-    global start_ts
-    if args.time:
-        if args.csv:
-            print("%s," % strftime("%H:%M:%S"), end="")
-        else:
-            print("%-8s " % strftime("%H:%M:%S"), end="")
-    if args.timestamp:
-        if start_ts == 0:
-            start_ts = event.ts_us
-        delta_s = (float(event.ts_us) - start_ts) / 1000000
-        if args.csv:
-            print("%.6f," % delta_s, end="")
-        else:
-            print("%-9.6f " % delta_s, end="")
-    print(format_string % (event.pid, event.task.decode(),
-        "6" if args.wide or args.csv else "",
-        inet_ntop(AF_INET6, event.saddr), event.ports >> 32,
-        inet_ntop(AF_INET6, event.daddr), event.ports & 0xffffffff,
-        event.tx_b / 1024,
-        event.rx_b / 1024,
-        float(event.span_us) / 1000,
-        123))
+    with open(tf.name, 'a') as f:
+        f.write(format_string % (event.pid, event.task.decode(),
+            inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
+            inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
+            event.tx_b / 1024, event.rx_b / 1024, float(event.span_us) / 1000))
 
 # initialize BPF
 b = BPF(text=bpf_text)
 
 # header
-if args.time:
-    if args.csv:
-        print("%s," % ("TIME"), end="")
-    else:
-        print("%-8s " % ("TIME"), end="")
-if args.timestamp:
-    if args.csv:
-        print("%s," % ("TIME(s)"), end="")
-    else:
-        print("%-9s " % ("TIME(s)"), end="")
-print(header_string % ("PID", "COMM",
-    "IP" if args.wide or args.csv else "", "LADDR",
-    "LPORT", "RADDR", "RPORT", "TX_KB", "RX_KB", "MS", 
-    "SRTT", "MDEV", "MDEVMAX", "RTTVAR"))
-
 start_ts = 0
+tf = tempfile.NamedTemporaryFile(delete=False) 
 
 # read events
 b["ipv4_events"].open_perf_buffer(print_ipv4_event, page_cnt=64)
-b["ipv6_events"].open_perf_buffer(print_ipv6_event, page_cnt=64)
 while 1:
     b.kprobe_poll()
