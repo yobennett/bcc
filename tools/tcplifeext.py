@@ -62,6 +62,8 @@ struct ipv4_data_t {
     u64 tx_b;
     u64 span_us;
     char task[TASK_COMM_LEN];
+    u64 srtt_us;
+    u64 rttvar_us;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -135,10 +137,12 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         pid = mep->pid;
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0;
+    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us, rttvar_us;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
+    srtt_us = tp->srtt_us;
+    rttvar_us = tp->rttvar_us;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -151,6 +155,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         // a workaround until data4 compiles with separate lport/dport
         data4.pid = pid;
         data4.ports = ntohs(dport) + ((0ULL + lport) << 32);
+        data4.srtt_us = srtt_us;
+        data4.rttvar_us = rttvar_us;
         if (mep == 0) {
             bpf_get_current_comm(&data4.task, sizeof(data4.task));
         } else {
@@ -184,7 +190,9 @@ class Data_ipv4(ct.Structure):
         ("rx_b", ct.c_ulonglong),
         ("tx_b", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN)
+        ("task", ct.c_char * TASK_COMM_LEN),
+        ("srtt_us", ct.c_ulonglong),
+        ("rttvar_us", ct.c_ulonglong)
     ]
 
 #
@@ -195,7 +203,7 @@ class Data_ipv4(ct.Structure):
 # need to add columns, columns that solve real actual problems, I'd start by
 # adding an extended mode (-x) to included those columns.
 #
-format_string = "pid=%d task=%s saddr=%s sport=%d daddr=%s dport=%d tx=%d rx=%d span_us=%.2f\n"
+format_string = "pid=%d task=%s saddr=%s sport=%d daddr=%s dport=%d tx=%d rx=%d span_us=%d srtt_us=%d rttvar_us=%d\n"
 
 # process event
 def print_ipv4_event(cpu, data, size):
@@ -205,7 +213,8 @@ def print_ipv4_event(cpu, data, size):
         f.write(format_string % (event.pid, event.task.decode(),
             inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
             inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-            event.tx_b / 1024, event.rx_b / 1024, float(event.span_us) / 1000))
+            event.tx_b / 1024, event.rx_b / 1024, event.span_us,
+            event.srtt_us, event.rttvar_us))
 
 # initialize BPF
 b = BPF(text=bpf_text)
