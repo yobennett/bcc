@@ -69,6 +69,8 @@ struct ipv4_data_t {
     char task[TASK_COMM_LEN];
     u64 srtt_us;
     u64 rttvar_us;
+    u64 mss_cache;
+    u64 advmss;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -142,12 +144,14 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         pid = mep->pid;
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us, rttvar_us;
+    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us, rttvar_us, mss_cache, advmss;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     rx_b = tp->bytes_received;
     tx_b = tp->bytes_acked;
     srtt_us = tp->srtt_us;
     rttvar_us = tp->rttvar_us;
+    mss_cache = tp->mss_cache;
+    advmss = tp->advmss;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -162,6 +166,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         data4.ports = ntohs(dport) + ((0ULL + lport) << 32);
         data4.srtt_us = srtt_us;
         data4.rttvar_us = rttvar_us;
+        data4.mss_cache = mss_cache;
+        data4.advmss = advmss;
         if (mep == 0) {
             bpf_get_current_comm(&data4.task, sizeof(data4.task));
         } else {
@@ -197,7 +203,9 @@ class Data_ipv4(ct.Structure):
         ("span_us", ct.c_ulonglong),
         ("task", ct.c_char * TASK_COMM_LEN),
         ("srtt_us", ct.c_ulonglong),
-        ("rttvar_us", ct.c_ulonglong)
+        ("rttvar_us", ct.c_ulonglong),
+        ("mss_cache", ct.c_ulonglong),
+        ("advmss", ct.c_ulonglong),
     ]
 
 # periodic scheduler from https://stackoverflow.com/a/2399145
@@ -206,13 +214,14 @@ def periodic(scheduler, interval, action, actionargs=()):
     action(*actionargs)
 
 def format_ipv4_event(event):
-    return '* pid={} task={} saddr={} sport={} daddr={} dport={} tx={} rx={} span_us={} srtt_us={} rttvar_us={}'.format(
+    return 'pid={} task={} saddr={} sport={} daddr={} dport={} tx={} rx={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={}'.format(
                 event.pid, event.task.decode(),
                 inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
                 inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
                 event.tx_b, event.rx_b, 
                 event.span_us,
-                event.srtt_us, event.rttvar_us
+                event.srtt_us, event.rttvar_us,
+                event.mss_cache, event.advmss
             )
 
 # process event
