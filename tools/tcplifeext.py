@@ -251,7 +251,8 @@ class MyWriter(threading.Thread):
         pass
 
     def write(self):
-        print('\nwriting')
+        if len(self.queue) == 0:
+            return
         t = datetime.datetime.utcnow()
         ft = t.strftime('%Y%m%d-%H%M%S')
         fp = os.path.join('/mnt/data/tcpstats', ft)
