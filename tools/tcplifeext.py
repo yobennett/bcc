@@ -22,12 +22,17 @@
 
 from __future__ import print_function
 from bcc import BPF
+from collections import deque
 import argparse
 from socket import inet_ntop, ntohs, AF_INET, AF_INET6
 from struct import pack
 import ctypes as ct
 import tempfile
-from time import strftime
+import sched
+import datetime
+import time
+import os
+import threading
 
 # arguments
 examples = """examples:
@@ -195,35 +200,80 @@ class Data_ipv4(ct.Structure):
         ("rttvar_us", ct.c_ulonglong)
     ]
 
-#
-# Setup output formats
-#
-# Don't change the default output (next 2 lines): this fits in 80 chars. I
-# know it doesn't have NS or UIDs etc. I know. If you really, really, really
-# need to add columns, columns that solve real actual problems, I'd start by
-# adding an extended mode (-x) to included those columns.
-#
-format_string = "pid=%d task=%s saddr=%s sport=%d daddr=%s dport=%d tx=%d rx=%d span_us=%d srtt_us=%d rttvar_us=%d\n"
+# periodic scheduler from https://stackoverflow.com/a/2399145
+def periodic(scheduler, interval, action, actionargs=()):
+    scheduler.enter(interval, 1, periodic, (scheduler, interval, action, actionargs))
+    action(*actionargs)
+
+def format_ipv4_event(event):
+    return '* pid={} task={} saddr={} sport={} daddr={} dport={} tx={} rx={} span_us={} srtt_us={} rttvar_us={}'.format(
+                event.pid, event.task.decode(),
+                inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
+                inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
+                event.tx_b, event.rx_b, 
+                event.span_us,
+                event.srtt_us, event.rttvar_us
+            )
 
 # process event
-def print_ipv4_event(cpu, data, size):
+def handle_ipv4_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(Data_ipv4)).contents
-    global start_ts
-    with open(tf.name, 'a') as f:
-        f.write(format_string % (event.pid, event.task.decode(),
-            inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
-            inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-            event.tx_b / 1024, event.rx_b / 1024, event.span_us,
-            event.srtt_us, event.rttvar_us))
+    curr_buff.append(event)
+
+
+class MyScheduler(threading.Thread):
+
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.scheduler = sched.scheduler(time.time, time.sleep)
+
+    def run(self):
+        print('running scheduler')
+        self.scheduler.run()
+
+
+class MyWriter(threading.Thread):
+
+    def __init__(self, queue):
+        threading.Thread.__init__(self)
+        self.queue = queue
+
+    def run(self):
+        pass
+
+    def write(self):
+        print('\nwriting')
+        t = datetime.datetime.utcnow()
+        ft = t.strftime('%Y%m%d-%H%M%S')
+        fp = os.path.join('/mnt/data/tcpstats', ft)
+        print('flushing buffer with {} events to {}'.format(len(self.queue), fp))
+        events = [event for event in self.queue]
+        s = '\n'.join([format_ipv4_event(event) for event in events]) + '\n'
+        with open(fp, 'w') as f:
+            f.write(s)
+        self.clear()
+
+    def clear(self):
+        self.queue.clear()
+
 
 # initialize BPF
 b = BPF(text=bpf_text)
 
-# header
-start_ts = 0
-tf = tempfile.NamedTemporaryFile(delete=False) 
+# set up buffer for events
+curr_buff = deque()
 
-# read events
-b["ipv4_events"].open_perf_buffer(print_ipv4_event, page_cnt=64)
+# set up scheduler and writer for events
+my_writer = MyWriter(queue=curr_buff)
+my_writer.daemon = True
+my_writer.start()
+my_scheduler = MyScheduler()
+my_scheduler.daemon = True
+periodic(my_scheduler.scheduler, 5, my_writer.write)
+my_scheduler.start()
+
+# handle events
+b["ipv4_events"].open_perf_buffer(handle_ipv4_event, page_cnt=64)
+print('handling ipv4_events')
 while 1:
     b.kprobe_poll()
