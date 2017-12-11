@@ -64,16 +64,21 @@ struct ipv4_data_t {
     u64 saddr;
     u64 daddr;
     u64 ports;
-    u64 bytes_received;
-    u64 bytes_acked;
-    u64 segs_in;
-    u64 segs_out;
+    u64 bytes_received; /* RFC4898 tcpEStatsAppHCThruOctetsReceived */
+    u64 bytes_acked; /* RFC4898 tcpEStatsAppHCThruOctetsAcked */
+    u64 segs_in; /* RFC4898 tcpEStatsPerfSegsIn */
+    u64 segs_out; /* RFC4898 tcpEStatsPerfSegsOut */
     u64 span_us;
     char task[TASK_COMM_LEN];
-    u64 srtt_us;
-    u64 rttvar_us;
-    u64 mss_cache;
-    u64 advmss;
+    u64 srtt_us; /* smoothed round trip time << 3 in umsecs */
+    u64 rttvar_us; /* smoothed mdev_max */
+    u64 mss_cache; /* Cached effective MSS, not including SACKS */
+    u64 advmss; /* Advertised MSS */
+    u64 max_window; /* Maximal window ever seen from peer */
+    u64 window_clamp; /* Maximal window to advertise */
+    u64 lost_out; /* Lost packets */
+    u64 sacked_out; /* SACK'd packets */
+    u64 fackets_out; /* FACK'd packets */
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -152,15 +157,22 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     // get throughput stats. see tcp_get_info().
     u64 bytes_received = 0, bytes_acked = 0, sport = 0, srtt_us, rttvar_us, mss_cache, advmss;
     u64 segs_in = 0, segs_out = 0;
+    u64 max_window = 0, window_clamp = 0;
+    u64 lost_out = 0, sacked_out = 0, fackets_out = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
     bytes_received = tp->bytes_received;
     bytes_acked = tp->bytes_acked;
     segs_in = tp->segs_in;
     segs_out = tp->segs_out;
-    srtt_us = tp->srtt_us;
-    rttvar_us = tp->rttvar_us;
+    srtt_us = tp->srtt_us >> 3;
+    rttvar_us = tp->mdev_us >> 2;
     mss_cache = tp->mss_cache;
     advmss = tp->advmss;
+    max_window = tp->max_window;
+    window_clamp = tp->window_clamp;
+    lost_out = tp->lost_out;
+    sacked_out = tp->sacked_out;
+    fackets_out = tp->fackets_out;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -170,7 +182,12 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
             .bytes_received = bytes_received,
             .bytes_acked = bytes_acked,
             .segs_in = segs_in,
-            .segs_out = segs_out
+            .segs_out = segs_out,
+            .max_window = max_window,
+            .window_clamp = window_clamp,
+            .lost_out = lost_out,
+            .sacked_out = sacked_out,
+            .fackets_out = fackets_out,
         };
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
@@ -222,6 +239,11 @@ class Data_ipv4(ct.Structure):
         ("rttvar_us", ct.c_ulonglong),
         ("mss_cache", ct.c_ulonglong),
         ("advmss", ct.c_ulonglong),
+        ("max_window", ct.c_ulonglong),
+        ("window_clamp", ct.c_ulonglong),
+        ("lost_out", ct.c_ulonglong),
+        ("sacked_out", ct.c_ulonglong),
+        ("fackets_out", ct.c_ulonglong)
     ]
 
 # periodic scheduler from https://stackoverflow.com/a/2399145
@@ -230,7 +252,7 @@ def periodic(scheduler, interval, action, actionargs=()):
     action(*actionargs)
 
 def format_ipv4_event(event):
-    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={}'.format(
+    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={}'.format(
                 event.pid, event.task.decode(),
                 inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
                 inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
@@ -238,7 +260,9 @@ def format_ipv4_event(event):
                 event.segs_in, event.segs_out,
                 event.span_us,
                 event.srtt_us, event.rttvar_us,
-                event.mss_cache, event.advmss
+                event.mss_cache, event.advmss,
+                event.max_window, event.window_clamp,
+                event.lost_out, event.sacked_out, event.fackets_out,
             )
 
 # process event
