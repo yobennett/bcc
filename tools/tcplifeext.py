@@ -64,8 +64,10 @@ struct ipv4_data_t {
     u64 saddr;
     u64 daddr;
     u64 ports;
-    u64 rx_b;
-    u64 tx_b;
+    u64 bytes_received;
+    u64 bytes_acked;
+    u64 segs_in;
+    u64 segs_out;
     u64 span_us;
     char task[TASK_COMM_LEN];
     u64 srtt_us;
@@ -148,10 +150,13 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         pid = mep->pid;
 
     // get throughput stats. see tcp_get_info().
-    u64 rx_b = 0, tx_b = 0, sport = 0, srtt_us, rttvar_us, mss_cache, advmss;
+    u64 bytes_received = 0, bytes_acked = 0, sport = 0, srtt_us, rttvar_us, mss_cache, advmss;
+    u64 segs_in = 0, segs_out = 0;
     struct tcp_sock *tp = (struct tcp_sock *)sk;
-    rx_b = tp->bytes_received;
-    tx_b = tp->bytes_acked;
+    bytes_received = tp->bytes_received;
+    bytes_acked = tp->bytes_acked;
+    segs_in = tp->segs_in;
+    segs_out = tp->segs_out;
     srtt_us = tp->srtt_us;
     rttvar_us = tp->rttvar_us;
     mss_cache = tp->mss_cache;
@@ -160,8 +165,13 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
-        struct ipv4_data_t data4 = {.span_us = delta_us,
-            .rx_b = rx_b, .tx_b = tx_b};
+        struct ipv4_data_t data4 = {
+            .span_us = delta_us,
+            .bytes_received = bytes_received,
+            .bytes_acked = bytes_acked,
+            .segs_in = segs_in,
+            .segs_out = segs_out
+        };
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
@@ -202,8 +212,10 @@ class Data_ipv4(ct.Structure):
         ("saddr", ct.c_ulonglong),
         ("daddr", ct.c_ulonglong),
         ("ports", ct.c_ulonglong),
-        ("rx_b", ct.c_ulonglong),
-        ("tx_b", ct.c_ulonglong),
+        ("bytes_received", ct.c_ulonglong),
+        ("bytes_acked", ct.c_ulonglong),
+        ("segs_in", ct.c_ulonglong),
+        ("segs_out", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
         ("task", ct.c_char * TASK_COMM_LEN),
         ("srtt_us", ct.c_ulonglong),
@@ -218,11 +230,12 @@ def periodic(scheduler, interval, action, actionargs=()):
     action(*actionargs)
 
 def format_ipv4_event(event):
-    return 'pid={} task={} saddr={} sport={} daddr={} dport={} tx={} rx={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={}'.format(
+    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={}'.format(
                 event.pid, event.task.decode(),
                 inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
                 inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
-                event.tx_b, event.rx_b, 
+                event.bytes_received, event.bytes_acked,
+                event.segs_in, event.segs_out,
                 event.span_us,
                 event.srtt_us, event.rttvar_us,
                 event.mss_cache, event.advmss
