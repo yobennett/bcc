@@ -50,6 +50,7 @@ bpf_text = """
 #include <uapi/linux/ptrace.h>
 #define KBUILD_MODNAME "foo"
 #include <linux/tcp.h>
+#include <net/tcp.h>
 #include <net/sock.h>
 #include <bcc/proto.h>
 
@@ -82,6 +83,9 @@ BPF_HASH(whoami, struct sock *, struct id_t);
 
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
+    struct tcp_info info;
+    //tcp_get_info(sk, &info);
+
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // lport is either used in a filter here, or later
