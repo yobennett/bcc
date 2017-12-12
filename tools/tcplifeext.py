@@ -203,12 +203,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
     const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
     memset(&info, 0, sizeof info);
-    u64 tcpi_rto = 0;
-    tcpi_rto = (icsk->icsk_rto * 4000) / 1;
-    //info.tcpi_rto = icsk->icsk_rto;  // (icsk->icsk_rto * hz_to_usecs_num) / hz_to_usecs_den;
+    info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
 
-    //bpf_trace_printk("BOOM4! %llx\\n", tcpi_rto);
-    
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
@@ -218,9 +214,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
             .segs_in = segs_in, .segs_out = segs_out,
             .max_window = max_window, .window_clamp = window_clamp,
             .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
-            .tcpi_rto = tcpi_rto,
+            .tcpi_rto = info.tcpi_rto,
         };
-        //data4.tcpi_rto = info.tcpi_rto;
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
