@@ -79,6 +79,7 @@ struct ipv4_data_t {
     u64 lost_out; /* Lost packets */
     u64 sacked_out; /* SACK'd packets */
     u64 fackets_out; /* FACK'd packets */
+    u64 tcpi_rto;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -88,10 +89,33 @@ struct id_t {
 };
 BPF_HASH(whoami, struct sock *, struct id_t);
 
+/*
+static u64 gcd(int a, int b)
+{
+    int temp;
+    while (b != 0)
+    {
+        temp = a % b;
+        a = b;
+        b = temp;
+    }
+    return a;
+}
+
+static u64 j_to_usecs(const unsigned long j)
+{
+    int cd = 0, hz_to_usec_num = 0, hz_to_usec_den = 0;
+    int hz = 0;
+    hz = 250;
+    cd = gcd(hz, 1000000);
+    hz_to_usec_num = 1000000/cd;
+    hz_to_usec_den = hz/cd;
+    return (j * hz_to_usec_num) / hz_to_usec_den;
+}
+*/
+
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
-    struct tcp_info info;
-    //tcp_get_info(sk, &info);
 
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
@@ -154,12 +178,12 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     if (mep != 0)
         pid = mep->pid;
 
-    // get throughput stats. see tcp_get_info().
+    // get tcp_sock stats
+    struct tcp_sock *tp = (struct tcp_sock *)sk;
     u64 bytes_received = 0, bytes_acked = 0, sport = 0, srtt_us, rttvar_us, mss_cache, advmss;
     u64 segs_in = 0, segs_out = 0;
     u64 max_window = 0, window_clamp = 0;
     u64 lost_out = 0, sacked_out = 0, fackets_out = 0;
-    struct tcp_sock *tp = (struct tcp_sock *)sk;
     bytes_received = tp->bytes_received;
     bytes_acked = tp->bytes_acked;
     segs_in = tp->segs_in;
@@ -174,21 +198,26 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     sacked_out = tp->sacked_out;
     fackets_out = tp->fackets_out;
 
+    // get tcp_info stats
+    struct tcp_info info;
+    //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
+    const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    memset(&info, 0, sizeof info);
+    //info.tcpi_rto = icsk->icsk_rto;  // (icsk->icsk_rto * hz_to_usecs_num) / hz_to_usecs_den;
+
+    bpf_trace_printk("BOOM4! %u\\n", icsk->icsk_rto);
+    
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {
             .span_us = delta_us,
-            .bytes_received = bytes_received,
-            .bytes_acked = bytes_acked,
-            .segs_in = segs_in,
-            .segs_out = segs_out,
-            .max_window = max_window,
-            .window_clamp = window_clamp,
-            .lost_out = lost_out,
-            .sacked_out = sacked_out,
-            .fackets_out = fackets_out,
+            .bytes_received = bytes_received, .bytes_acked = bytes_acked,
+            .segs_in = segs_in, .segs_out = segs_out,
+            .max_window = max_window, .window_clamp = window_clamp,
+            .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
         };
+        //data4.tcpi_rto = info.tcpi_rto;
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
         data4.daddr = sk->__sk_common.skc_daddr;
@@ -243,7 +272,8 @@ class Data_ipv4(ct.Structure):
         ("window_clamp", ct.c_ulonglong),
         ("lost_out", ct.c_ulonglong),
         ("sacked_out", ct.c_ulonglong),
-        ("fackets_out", ct.c_ulonglong)
+        ("fackets_out", ct.c_ulonglong),
+        ("tcpi_rto", ct.c_ulonglong),
     ]
 
 # periodic scheduler from https://stackoverflow.com/a/2399145
@@ -252,7 +282,7 @@ def periodic(scheduler, interval, action, actionargs=()):
     action(*actionargs)
 
 def format_ipv4_event(event):
-    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={}'.format(
+    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}'.format(
                 event.pid, event.task.decode(),
                 inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
                 inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
@@ -263,6 +293,7 @@ def format_ipv4_event(event):
                 event.mss_cache, event.advmss,
                 event.max_window, event.window_clamp,
                 event.lost_out, event.sacked_out, event.fackets_out,
+                event.tcpi_rto,
             )
 
 # process event
