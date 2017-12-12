@@ -81,6 +81,7 @@ struct ipv4_data_t {
     u64 fackets_out; /* FACK'd packets */
     u64 tcpi_rto;
     u64 tcpi_ato;
+    u64 tcpi_options;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -91,18 +92,6 @@ struct id_t {
 BPF_HASH(whoami, struct sock *, struct id_t);
 
 /*
-static u64 gcd(int a, int b)
-{
-    int temp;
-    while (b != 0)
-    {
-        temp = a % b;
-        a = b;
-        b = temp;
-    }
-    return a;
-}
-
 static u64 j_to_usecs(const unsigned long j)
 {
     int cd = 0, hz_to_usec_num = 0, hz_to_usec_den = 0;
@@ -114,6 +103,11 @@ static u64 j_to_usecs(const unsigned long j)
     return (j * hz_to_usec_num) / hz_to_usec_den;
 }
 */
+
+struct access_bitfield_tstamp_ok {
+    u8 pad0[1616+22 - 3];
+    u16 tstamp_ok;
+};
 
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
@@ -207,6 +201,29 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
     info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
 
+    //u16 foo;
+    //struct tcp_options_received rx_opt;
+    // bpf_probe_read(&foo, sizeof(foo), (void *)((long)&tp->rx_opt.num_sacks) - 2);
+    // bpf_trace_printk("phelps %d\\n", offsetof(struct tcp_sock, rx_opt));
+    // bpf_trace_printk("phelps %d\\n", offsetof(struct tcp_options_received, num_sacks));
+
+    struct access_bitfield_tstamp_ok* accessor = (struct access_bitfield_tstamp_ok*)tp;
+    u16 tstamp_ok = 0;
+    tstamp_ok = accessor->tstamp_ok;
+    bpf_trace_printk("* %x\\n", tstamp_ok);
+
+    /*
+    if (tp->rx_opt.tstamp_ok)
+        info.tcpi_options |= TCPI_OPT_TIMESTAMPS;
+    if (tcp_is_sack(tp))
+        info->tcpi_options |= TCPI_OPT_SACK;
+    if (tp->rx_opt.wscale_ok) {
+        info->tcpi_options |= TCPI_OPT_WSCALE;
+        info->tcpi_snd_wscale = tp->rx_opt.snd_wscale;
+        info->tcpi_rcv_wscale = tp->rx_opt.rcv_wscale;
+    }
+    */
+
     u16 family = sk->__sk_common.skc_family;
 
     if (family == AF_INET) {
@@ -214,6 +231,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
             .span_us = delta_us,
             .bytes_received = bytes_received, .bytes_acked = bytes_acked,
             .segs_in = segs_in, .segs_out = segs_out,
+            .srtt_us = srtt_us, .rttvar_us = rttvar_us,
+            .mss_cache = mss_cache, .advmss = advmss,
             .max_window = max_window, .window_clamp = window_clamp,
             .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
             .tcpi_rto = info.tcpi_rto,
@@ -225,10 +244,6 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         // a workaround until data4 compiles with separate lport/dport
         data4.pid = pid;
         data4.ports = ntohs(dport) + ((0ULL + lport) << 32);
-        data4.srtt_us = srtt_us;
-        data4.rttvar_us = rttvar_us;
-        data4.mss_cache = mss_cache;
-        data4.advmss = advmss;
         if (mep == 0) {
             bpf_get_current_comm(&data4.task, sizeof(data4.task));
         } else {
