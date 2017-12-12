@@ -80,6 +80,7 @@ struct ipv4_data_t {
     u64 sacked_out; /* SACK'd packets */
     u64 fackets_out; /* FACK'd packets */
     u64 tcpi_rto;
+    u64 tcpi_ato;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
@@ -204,6 +205,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
     memset(&info, 0, sizeof info);
     info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
+    info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
 
     u16 family = sk->__sk_common.skc_family;
 
@@ -215,6 +217,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
             .max_window = max_window, .window_clamp = window_clamp,
             .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
             .tcpi_rto = info.tcpi_rto,
+            .tcpi_ato = info.tcpi_ato,
         };
         data4.ts_us = bpf_ktime_get_ns() / 1000;
         data4.saddr = sk->__sk_common.skc_rcv_saddr;
@@ -272,6 +275,7 @@ class Data_ipv4(ct.Structure):
         ("sacked_out", ct.c_ulonglong),
         ("fackets_out", ct.c_ulonglong),
         ("tcpi_rto", ct.c_ulonglong),
+        ("tcpi_ato", ct.c_ulonglong),
     ]
 
 # periodic scheduler from https://stackoverflow.com/a/2399145
@@ -280,7 +284,7 @@ def periodic(scheduler, interval, action, actionargs=()):
     action(*actionargs)
 
 def format_ipv4_event(event):
-    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}'.format(
+    return 'pid={} task={} saddr={} sport={} daddr={} dport={} bytes_received={} bytes_acked={} segs_in={} segs_out={} span_us={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={} tcpi_ato={}'.format(
                 event.pid, event.task.decode(),
                 inet_ntop(AF_INET, pack("I", event.saddr)), event.ports >> 32,
                 inet_ntop(AF_INET, pack("I", event.daddr)), event.ports & 0xffffffff,
@@ -292,6 +296,7 @@ def format_ipv4_event(event):
                 event.max_window, event.window_clamp,
                 event.lost_out, event.sacked_out, event.fackets_out,
                 event.tcpi_rto,
+                event.tcpi_ato,
             )
 
 # process event
