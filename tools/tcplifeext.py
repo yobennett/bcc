@@ -109,6 +109,11 @@ struct access_bitfield_tstamp_ok {
     u16 tstamp_ok;
 };
 
+struct bitfield_accessor {
+    u8 pad0[1616 + 22 - 3];
+    u16 bitfield_val;
+};
+
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
 
@@ -207,10 +212,30 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     // bpf_trace_printk("phelps %d\\n", offsetof(struct tcp_sock, rx_opt));
     // bpf_trace_printk("phelps %d\\n", offsetof(struct tcp_options_received, num_sacks));
 
+    /*
     struct access_bitfield_tstamp_ok* accessor = (struct access_bitfield_tstamp_ok*)tp;
     u16 tstamp_ok = 0;
     tstamp_ok = accessor->tstamp_ok;
     bpf_trace_printk("* %x\\n", tstamp_ok);
+    */
+
+    /*
+    struct bitfield_accessor* a = (struct bitfield_accessor*)tp;
+    u16 bitfield_val = 0;
+    bitfield_val = a->bitfield_val;
+    bpf_trace_printk("bitfield_val %x\\n", bitfield_val);
+    */
+
+    bpf_trace_printk("tcp_options_received ts_recent_stamp: %d \\n", offsetof(struct tcp_options_received, ts_recent_stamp));
+    bpf_trace_printk("tcp_options_received ts_recent: %d \\n", offsetof(struct tcp_options_received, ts_recent));
+    bpf_trace_printk("tcp_options_received rcv_tsval: %d \\n", offsetof(struct tcp_options_received, rcv_tsval));
+    bpf_trace_printk("tcp_options_received rcv_tsecr: %d \\n", offsetof(struct tcp_options_received, rcv_tsecr));
+    bpf_trace_printk("tcp_options_received num_sacks: %d \\n", offsetof(struct tcp_options_received, num_sacks));
+    bpf_trace_printk("tcp_options_received user_mss: %d \\n", offsetof(struct tcp_options_received, user_mss));
+    bpf_trace_printk("tcp_options_received mss_clamp: %d \\n", offsetof(struct tcp_options_received, mss_clamp));
+
+    // u16 snd_wscale = 0, rcv_wscale = 0;
+    // bpf_trace_printk("snd_wscale: %d \\n", snd_wscale);
 
     /*
     if (tp->rx_opt.tstamp_ok)
