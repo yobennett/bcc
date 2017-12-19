@@ -66,19 +66,6 @@ struct id_t {
 };
 BPF_HASH(whoami, struct sock *, struct id_t);
 
-int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
-{
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-    // lport is either used in a filter here, or later
-    u16 lport = sk->__sk_common.skc_num;
-
-    // dport is either used in a filter here, or later
-    u16 dport = sk->__sk_common.skc_dport;
-
-    return 0;
-}
-
 int kretprobe__inet_csk_accept(struct pt_regs *ctx)
 {
     struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
@@ -100,6 +87,40 @@ int trace_connect(struct pt_regs *ctx, struct sock *sk)
     birth.update(&sk, &b);
     return 0;
 };
+
+int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
+{
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    // lport is either used in a filter here, or later
+    u16 lport = sk->__sk_common.skc_num;
+    // dport is either used in a filter here, or later
+    u16 dport = sk->__sk_common.skc_dport;
+
+    if (state != TCP_CLOSE) {
+        return 0;
+    }
+
+    // determine lifecycle span
+    struct birth_t *b;
+    u64 delta_us;
+    b = birth.lookup(&sk);
+
+    if (b == NULL) {
+        // no birth info
+        bpf_trace_printk("no birth\\n");
+        return 0;
+
+    }
+
+    if (b->ts == 0) {
+        bpf_trace_printk("no birth ts\\n");
+        return 0;
+    }
+    birth.delete(&sk);
+    bpf_trace_printk("birth at %d\\n", b->ts);
+    return 0;
+};
+
 """
 
 if debug:
