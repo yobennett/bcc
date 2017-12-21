@@ -70,7 +70,7 @@ struct birth_t {
 };
 BPF_HASH(births, struct sock *, struct birth_t);
 
-struct tcp_ipv4_sess_t {
+struct tcp_ipv4_event_t {
     u64 event_type;
     u64 sample_rate;
     u64 ip_ver;
@@ -95,7 +95,7 @@ struct tcp_ipv4_sess_t {
     u64 tcpi_rto;
     u64 tcpi_ato;
 };
-BPF_PERF_OUTPUT(tcp_ipv4_sess_events);
+BPF_PERF_OUTPUT(tcp_ipv4_events);
 
 int kretprobe__inet_csk_accept(struct pt_regs *ctx)
 {
@@ -167,7 +167,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
 
     if (family == AF_INET) {
-        struct tcp_ipv4_sess_t sess = {
+        struct tcp_ipv4_event_t event = {
             .event_type = CLOSED,
             .sample_rate = 1,
             .ip_ver = 4,
@@ -181,11 +181,11 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
             .tcpi_rto = info.tcpi_rto,
             .tcpi_ato = info.tcpi_ato,
         };
-        sess.saddr = sk->__sk_common.skc_rcv_saddr;
-        sess.daddr = sk->__sk_common.skc_daddr;
-        sess.ports = ntohs(dport) + ((0ULL + lport) << 32);
-        sess.span_us = (now - ts) / 1000;
-        tcp_ipv4_sess_events.perf_submit(ctx, &sess, sizeof(sess));
+        event.saddr = sk->__sk_common.skc_rcv_saddr;
+        event.daddr = sk->__sk_common.skc_daddr;
+        event.ports = ntohs(dport) + ((0ULL + lport) << 32);
+        event.span_us = (now - ts) / 1000;
+        tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
     }
 
     return 0;
@@ -195,7 +195,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
 """
 
-class TCPIPv4Sess(ct.Structure):
+class TCPIPv4Event(ct.Structure):
     _fields_ = [
         ("event_type", ct.c_ulonglong),
         ("sample_rate", ct.c_ulonglong),
@@ -222,8 +222,8 @@ class TCPIPv4Sess(ct.Structure):
         ("tcpi_ato", ct.c_ulonglong),
     ]
 
-def on_tcp_ipv4_sess_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(TCPIPv4Sess)).contents
+def on_tcp_ipv4_event(cpu, data, size):
+    event = ct.cast(data, ct.POINTER(TCPIPv4Event)).contents
     print('event_type={} sample_rate={} ip_ver={} s={}:{} d={}:{} span={}us open_type={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}us tcpi_ato={}us'.format(
         event.event_type,
         event.sample_rate,
@@ -260,7 +260,7 @@ b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
 #b.attach_kprobe(event="tcp_retransmit_skb", fn_name="trace_retransmit")
 #b.attach_kprobe(event="tcp_send_loss_probe", fn_name="trace_tlp")
 
-b["tcp_ipv4_sess_events"].open_perf_buffer(on_tcp_ipv4_sess_event, page_cnt=64)
+b["tcp_ipv4_events"].open_perf_buffer(on_tcp_ipv4_event, page_cnt=64)
 while True:
     try:
         if not exiting:
