@@ -74,6 +74,21 @@ struct tcp_ipv4_sess_t {
     u64 ports;
     u64 span_us;
     u64 active;
+    u64 bytes_received; /* RFC4898 tcpEStatsAppHCThruOctetsReceived */
+    u64 bytes_acked; /* RFC4898 tcpEStatsAppHCThruOctetsAcked */
+    u64 segs_in; /* RFC4898 tcpEStatsPerfSegsIn */
+    u64 segs_out; /* RFC4898 tcpEStatsPerfSegsOut */
+    u64 srtt_us; /* smoothed round trip time << 3 in umsecs */
+    u64 rttvar_us; /* smoothed mdev_max */
+    u64 mss_cache; /* Cached effective MSS, not including SACKS */
+    u64 advmss; /* Advertised MSS */
+    u64 max_window; /* Maximal window ever seen from peer */
+    u64 window_clamp; /* Maximal window to advertise */
+    u64 lost_out; /* Lost packets */
+    u64 sacked_out; /* SACK'd packets */
+    u64 fackets_out; /* FACK'd packets */
+    u64 tcpi_rto;
+    u64 tcpi_ato;
 };
 BPF_PERF_OUTPUT(tcp_ipv4_sess_events);
 
@@ -106,8 +121,6 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
         return 0;
     }
 
-    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
-
     struct birth_t *b;
     u64 ts = 0, active = 0;
     b = births.lookup(&sk);
@@ -119,11 +132,47 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     }
 
     u64 now = bpf_ktime_get_ns();
+    
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+    u64 bytes_received = 0, bytes_acked = 0;
+    u64 segs_in = 0, segs_out = 0;
+    u64 srtt_us = 0, rttvar_us = 0;
+    u64 mss_cache = 0, advmss = 0;
+    u64 max_window = 0, window_clamp = 0;
+    u64 lost_out = 0, sacked_out = 0, fackets_out = 0;
+    bytes_received = tcp_sock->bytes_received;
+    bytes_acked = tcp_sock->bytes_acked;
+    segs_in = tcp_sock->segs_in;
+    segs_out = tcp_sock->segs_out;
+    srtt_us = tcp_sock->srtt_us >> 3;
+    rttvar_us = tcp_sock->mdev_us >> 2;
+    mss_cache = tcp_sock->mss_cache;
+    advmss = tcp_sock->advmss;
+    max_window = tcp_sock->max_window;
+    window_clamp = tcp_sock->window_clamp;
+    lost_out = tcp_sock->lost_out;
+    sacked_out = tcp_sock->sacked_out;
+    fackets_out = tcp_sock->fackets_out; 
+
+    struct tcp_info info;
+    //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
+    const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    memset(&info, 0, sizeof info);
+    info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
+    info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
 
     if (family == AF_INET) {
         struct tcp_ipv4_sess_t sess = {
             .ip_ver = 4,
             .active = active,
+            .bytes_received = bytes_received, .bytes_acked = bytes_acked,
+            .segs_in = segs_in, .segs_out = segs_out,
+            .srtt_us = srtt_us, .rttvar_us = rttvar_us,
+            .mss_cache = mss_cache, .advmss = advmss,
+            .max_window = max_window, .window_clamp = window_clamp,
+            .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
+            .tcpi_rto = info.tcpi_rto,
+            .tcpi_ato = info.tcpi_ato,
         };
         sess.saddr = sk->__sk_common.skc_rcv_saddr;
         sess.daddr = sk->__sk_common.skc_daddr;
@@ -145,18 +194,41 @@ class TCPIPv4Sess(ct.Structure):
         ("ports", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
         ("active", ct.c_ulonglong),
+	("bytes_received", ct.c_ulonglong),
+        ("bytes_acked", ct.c_ulonglong),
+        ("segs_in", ct.c_ulonglong),
+        ("segs_out", ct.c_ulonglong),
+        ("srtt_us", ct.c_ulonglong),
+        ("rttvar_us", ct.c_ulonglong),
+        ("mss_cache", ct.c_ulonglong),
+        ("advmss", ct.c_ulonglong),
+        ("max_window", ct.c_ulonglong),
+        ("window_clamp", ct.c_ulonglong),
+        ("lost_out", ct.c_ulonglong),
+        ("sacked_out", ct.c_ulonglong),
+        ("fackets_out", ct.c_ulonglong),
+        ("tcpi_rto", ct.c_ulonglong),
+        ("tcpi_ato", ct.c_ulonglong),
     ]
 
 def on_tcp_ipv4_sess_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(TCPIPv4Sess)).contents
-    print('{} s={}:{} d={}:{} span={}us active={}'.format(
+    print('{} s={}:{} d={}:{} span={}us active={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={} tcpi_ato={}'.format(
         event.ip_ver, 
         inet_ntop(AF_INET, pack("I", event.saddr)), 
         event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), 
         event.ports & 0xffffffff,
         event.span_us,
-        event.active))
+        event.active,
+	event.bytes_received, event.bytes_acked,
+        event.segs_in, event.segs_out,
+        event.srtt_us, event.rttvar_us,
+        event.mss_cache, event.advmss,
+        event.max_window, event.window_clamp,
+        event.lost_out, event.sacked_out, event.fackets_out,
+        event.tcpi_rto,
+        event.tcpi_ato))
 
 if debug:
     print(bpf_text)
