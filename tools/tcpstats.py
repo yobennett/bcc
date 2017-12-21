@@ -237,6 +237,10 @@ if debug:
 TASK_COMM_LEN = 16      # linux/sched.h
 
 # initialize BPF
+wakeup_s = float(1)
+poll_timeout = 1
+exiting = False
+
 b = BPF(text=bpf_text)
 b.attach_kprobe(event="tcp_v4_connect", fn_name="trace_connect")
 b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
@@ -244,4 +248,15 @@ b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
 # handle events
 b["tcp_ipv4_sess_events"].open_perf_buffer(on_tcp_ipv4_sess_event, page_cnt=64)
 while True:
-    b.kprobe_poll()
+    try:
+        if not exiting:
+            print('sleeping {}s'.format(wakeup_s))
+            sleep(wakeup_s)
+    except KeyboardInterrupt:
+        exiting = True
+    else:
+        print('polling with {}s timeout'.format(poll_timeout))
+        b.kprobe_poll(timeout=poll_timeout)
+        if exiting:
+            exit(0)
+        continue
