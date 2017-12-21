@@ -33,6 +33,7 @@ import datetime
 import time
 import os
 import threading
+from time import sleep
 
 # arguments
 examples = """examples:
@@ -58,7 +59,7 @@ struct birth_t {
     u64 ts;
     u64 active;
 };
-BPF_HASH(birth, struct sock *, struct birth_t);
+BPF_HASH(births, struct sock *, struct birth_t);
 
 struct id_t {
     u32 pid;
@@ -66,62 +67,96 @@ struct id_t {
 };
 BPF_HASH(whoami, struct sock *, struct id_t);
 
+struct tcp_ipv4_sess_t {
+    u64 ip_ver;
+    u64 saddr;
+    u64 daddr;
+    u64 ports;
+    u64 span_us;
+    u64 active;
+};
+BPF_PERF_OUTPUT(tcp_ipv4_sess_events);
+
 int kretprobe__inet_csk_accept(struct pt_regs *ctx)
 {
     struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
     if (sk == NULL)
         return 0;
-    
-    bpf_trace_printk("inet_csk_accept\\n");    
     u64 ts = bpf_ktime_get_ns();
     struct birth_t b = {.ts = ts, .active = 0};
-    birth.update(&sk, &b);
+    births.update(&sk, &b);
     return 0;
 }
 
 int trace_connect(struct pt_regs *ctx, struct sock *sk)
 {
-    bpf_trace_printk("connect\\n");
     u64 ts = bpf_ktime_get_ns();
     struct birth_t b = {.ts = ts, .active = 1};
-    birth.update(&sk, &b);
+    births.update(&sk, &b);
     return 0;
 };
 
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
-    // lport is either used in a filter here, or later
     u16 lport = sk->__sk_common.skc_num;
-    // dport is either used in a filter here, or later
     u16 dport = sk->__sk_common.skc_dport;
-
+    u16 family = sk->__sk_common.skc_family;
+    
     if (state != TCP_CLOSE) {
         return 0;
     }
 
-    // determine lifecycle span
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+
     struct birth_t *b;
-    u64 delta_us;
-    b = birth.lookup(&sk);
+    u64 ts = 0, active = 0;
+    b = births.lookup(&sk);
 
-    if (b == NULL) {
-        // no birth info
-        bpf_trace_printk("no birth\\n");
-        return 0;
-
+    if (b != NULL) {
+        ts = b->ts;
+        active = b->active;
+        births.delete(&sk);
     }
 
-    if (b->ts == 0) {
-        bpf_trace_printk("no birth ts\\n");
-        return 0;
+    u64 now = bpf_ktime_get_ns();
+
+    if (family == AF_INET) {
+        struct tcp_ipv4_sess_t sess = {
+            .ip_ver = 4,
+            .active = active,
+        };
+        sess.saddr = sk->__sk_common.skc_rcv_saddr;
+        sess.daddr = sk->__sk_common.skc_daddr;
+        sess.ports = ntohs(dport) + ((0ULL + lport) << 32);
+        sess.span_us = (now - ts) / 1000;
+        tcp_ipv4_sess_events.perf_submit(ctx, &sess, sizeof(sess));
     }
-    birth.delete(&sk);
-    bpf_trace_printk("birth at %d\\n", b->ts);
+
     return 0;
 };
 
 """
+
+class TCPIPv4Sess(ct.Structure):
+    _fields_ = [
+        ("ip_ver", ct.c_ulonglong),
+        ("saddr", ct.c_ulonglong),
+        ("daddr", ct.c_ulonglong),
+        ("ports", ct.c_ulonglong),
+        ("span_us", ct.c_ulonglong),
+        ("active", ct.c_ulonglong),
+    ]
+
+def on_tcp_ipv4_sess_event(cpu, data, size):
+    event = ct.cast(data, ct.POINTER(TCPIPv4Sess)).contents
+    print('{} s={}:{} d={}:{} span={}us active={}'.format(
+        event.ip_ver, 
+        inet_ntop(AF_INET, pack("I", event.saddr)), 
+        event.ports >> 32,
+        inet_ntop(AF_INET, pack("I", event.daddr)), 
+        event.ports & 0xffffffff,
+        event.span_us,
+        event.active))
 
 if debug:
     print(bpf_text)
@@ -134,7 +169,7 @@ b = BPF(text=bpf_text)
 b.attach_kprobe(event="tcp_v4_connect", fn_name="trace_connect")
 b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
 
-
 # handle events
-while 1:
+b["tcp_ipv4_sess_events"].open_perf_buffer(on_tcp_ipv4_sess_event, page_cnt=64)
+while True:
     b.kprobe_poll()
