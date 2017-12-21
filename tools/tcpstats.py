@@ -55,25 +55,30 @@ bpf_text = """
 #include <net/sock.h>
 #include <bcc/proto.h>
 
+// event types
+#define CLOSED      1
+#define RETRANSMIT  2
+#define TLP         3
+
+// open types
+#define ACTIVE  1
+#define PASSIVE 2
+
 struct birth_t {
     u64 ts;
-    u64 active;
+    u64 open_type;
 };
 BPF_HASH(births, struct sock *, struct birth_t);
 
-struct id_t {
-    u32 pid;
-    char task[TASK_COMM_LEN];
-};
-BPF_HASH(whoami, struct sock *, struct id_t);
-
 struct tcp_ipv4_sess_t {
+    u64 event_type;
+    u64 sample_rate;
     u64 ip_ver;
     u64 saddr;
     u64 daddr;
     u64 ports;
     u64 span_us;
-    u64 active;
+    u64 open_type;
     u64 bytes_received; /* RFC4898 tcpEStatsAppHCThruOctetsReceived */
     u64 bytes_acked; /* RFC4898 tcpEStatsAppHCThruOctetsAcked */
     u64 segs_in; /* RFC4898 tcpEStatsPerfSegsIn */
@@ -98,7 +103,7 @@ int kretprobe__inet_csk_accept(struct pt_regs *ctx)
     if (sk == NULL)
         return 0;
     u64 ts = bpf_ktime_get_ns();
-    struct birth_t b = {.ts = ts, .active = 0};
+    struct birth_t b = {.ts = ts, .open_type = PASSIVE};
     births.update(&sk, &b);
     return 0;
 }
@@ -106,7 +111,7 @@ int kretprobe__inet_csk_accept(struct pt_regs *ctx)
 int trace_connect(struct pt_regs *ctx, struct sock *sk)
 {
     u64 ts = bpf_ktime_get_ns();
-    struct birth_t b = {.ts = ts, .active = 1};
+    struct birth_t b = {.ts = ts, .open_type = ACTIVE};
     births.update(&sk, &b);
     return 0;
 };
@@ -122,12 +127,12 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     }
 
     struct birth_t *b;
-    u64 ts = 0, active = 0;
+    u64 ts = 0, open_type = 0;
     b = births.lookup(&sk);
 
     if (b != NULL) {
         ts = b->ts;
-        active = b->active;
+        open_type = b->open_type;
         births.delete(&sk);
     }
 
@@ -163,8 +168,10 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
     if (family == AF_INET) {
         struct tcp_ipv4_sess_t sess = {
+            .event_type = CLOSED,
+            .sample_rate = 1,
             .ip_ver = 4,
-            .active = active,
+            .open_type = open_type,
             .bytes_received = bytes_received, .bytes_acked = bytes_acked,
             .segs_in = segs_in, .segs_out = segs_out,
             .srtt_us = srtt_us, .rttvar_us = rttvar_us,
@@ -184,16 +191,20 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     return 0;
 };
 
+
+
 """
 
 class TCPIPv4Sess(ct.Structure):
     _fields_ = [
+        ("event_type", ct.c_ulonglong),
+        ("sample_rate", ct.c_ulonglong),
         ("ip_ver", ct.c_ulonglong),
         ("saddr", ct.c_ulonglong),
         ("daddr", ct.c_ulonglong),
         ("ports", ct.c_ulonglong),
         ("span_us", ct.c_ulonglong),
-        ("active", ct.c_ulonglong),
+        ("open_type", ct.c_ulonglong),
 	("bytes_received", ct.c_ulonglong),
         ("bytes_acked", ct.c_ulonglong),
         ("segs_in", ct.c_ulonglong),
@@ -213,14 +224,16 @@ class TCPIPv4Sess(ct.Structure):
 
 def on_tcp_ipv4_sess_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(TCPIPv4Sess)).contents
-    print('{} s={}:{} d={}:{} span={}us active={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}us tcpi_ato={}us'.format(
+    print('event_type={} sample_rate={} ip_ver={} s={}:{} d={}:{} span={}us open_type={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}us tcpi_ato={}us'.format(
+        event.event_type,
+        event.sample_rate,
         event.ip_ver, 
         inet_ntop(AF_INET, pack("I", event.saddr)), 
         event.ports >> 32,
         inet_ntop(AF_INET, pack("I", event.daddr)), 
         event.ports & 0xffffffff,
         event.span_us,
-        event.active,
+        event.open_type,
 	event.bytes_received, event.bytes_acked,
         event.segs_in, event.segs_out,
         event.srtt_us, event.rttvar_us,
@@ -244,8 +257,9 @@ exiting = False
 b = BPF(text=bpf_text)
 b.attach_kprobe(event="tcp_v4_connect", fn_name="trace_connect")
 b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
+#b.attach_kprobe(event="tcp_retransmit_skb", fn_name="trace_retransmit")
+#b.attach_kprobe(event="tcp_send_loss_probe", fn_name="trace_tlp")
 
-# handle events
 b["tcp_ipv4_sess_events"].open_perf_buffer(on_tcp_ipv4_sess_event, page_cnt=64)
 while True:
     try:
