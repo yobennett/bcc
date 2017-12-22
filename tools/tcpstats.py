@@ -116,28 +116,21 @@ int trace_connect(struct pt_regs *ctx, struct sock *sk)
     return 0;
 };
 
-int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
-{
+static void get_basic_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+    bpf_trace_printk("sock\\n");
     u16 lport = sk->__sk_common.skc_num;
     u16 dport = sk->__sk_common.skc_dport;
     u16 family = sk->__sk_common.skc_family;
-    
-    if (state != TCP_CLOSE) {
-        return 0;
+    if (family == AF_INET) {
+        event->saddr = sk->__sk_common.skc_rcv_saddr;
+        event->daddr = sk->__sk_common.skc_daddr;
+        event->ports = ntohs(dport) + ((0ULL + lport) << 32);
     }
+}
 
-    struct birth_t *b;
-    u64 ts = 0, open_type = 0;
-    b = births.lookup(&sk);
-
-    if (b != NULL) {
-        ts = b->ts;
-        open_type = b->open_type;
-        births.delete(&sk);
-    }
-
-    u64 now = bpf_ktime_get_ns();
-    
+/*
+void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+    bpf_trace_printk("tcp_sock\\n");
     struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
     u64 bytes_received = 0, bytes_acked = 0;
     u64 segs_in = 0, segs_out = 0;
@@ -157,35 +150,80 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     window_clamp = tcp_sock->window_clamp;
     lost_out = tcp_sock->lost_out;
     sacked_out = tcp_sock->sacked_out;
-    fackets_out = tcp_sock->fackets_out; 
+    fackets_out = tcp_sock->fackets_out;
 
+    event->ip_ver = 4;
+    event->bytes_received = bytes_received;
+    event->bytes_acked = bytes_acked;
+    event->segs_in = segs_in;
+    event->segs_out = segs_out;
+    event->srtt_us = srtt_us;
+    event->rttvar_us = rttvar_us;
+    event->mss_cache = mss_cache; 
+    event->advmss = advmss;
+    event->max_window = max_window;
+    event->window_clamp = window_clamp;
+    event->lost_out = lost_out;
+    event->sacked_out = sacked_out;
+    event->fackets_out = fackets_out;
+}
+*/
+
+/*
+void get_tcp_info_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+    bpf_trace_printk("inet_connection_sock\\n");
     struct tcp_info info;
     //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
     const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
     memset(&info, 0, sizeof info);
     info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
     info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
+    
+    event->tcpi_rto = info.tcpi_rto;
+    event->tcpi_ato = info.tcpi_ato;
+}
+*/
 
+/*
+void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+    
     if (family == AF_INET) {
-        struct tcp_ipv4_event_t event = {
-            .event_type = CLOSED,
-            .sample_rate = 1,
-            .ip_ver = 4,
-            .open_type = open_type,
-            .bytes_received = bytes_received, .bytes_acked = bytes_acked,
-            .segs_in = segs_in, .segs_out = segs_out,
-            .srtt_us = srtt_us, .rttvar_us = rttvar_us,
-            .mss_cache = mss_cache, .advmss = advmss,
-            .max_window = max_window, .window_clamp = window_clamp,
-            .lost_out = lost_out, .sacked_out = sacked_out, .fackets_out = fackets_out,
-            .tcpi_rto = info.tcpi_rto,
-            .tcpi_ato = info.tcpi_ato,
-        };
-        event.saddr = sk->__sk_common.skc_rcv_saddr;
-        event.daddr = sk->__sk_common.skc_daddr;
-        event.ports = ntohs(dport) + ((0ULL + lport) << 32);
         event.span_us = (now - ts) / 1000;
         tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    }
+}
+*/
+
+int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
+{
+    if (state != TCP_CLOSE) {
+        return 0;
+    }
+
+    struct tcp_ipv4_event_t event;
+    memset(&event, 0, sizeof event);
+    get_basic_info(sk, &event);
+
+    struct birth_t *b;
+    b = births.lookup(&sk);
+    u64 ts = 0, open_type = 0;
+    u64 now = bpf_ktime_get_ns();
+    if (b != NULL) {
+        ts = b->ts;
+        open_type = b->open_type;
+        if (ts != 0) {
+            event.span_us = (now - ts) / 1000;
+        }
+        if (open_type != 0) {
+            event.open_type = open_type;
+        }
+    }
+    
+    event.event_type = CLOSED;
+    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+
+    if (b != NULL) {
+        births.delete(&sk);
     }
 
     return 0;
