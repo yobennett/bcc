@@ -97,8 +97,7 @@ struct tcp_ipv4_event_t {
 };
 BPF_PERF_OUTPUT(tcp_ipv4_events);
 
-int kretprobe__inet_csk_accept(struct pt_regs *ctx)
-{
+int kretprobe__inet_csk_accept(struct pt_regs *ctx) {
     struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
     if (sk == NULL)
         return 0;
@@ -108,16 +107,14 @@ int kretprobe__inet_csk_accept(struct pt_regs *ctx)
     return 0;
 }
 
-int trace_connect(struct pt_regs *ctx, struct sock *sk)
-{
+int trace_connect(struct pt_regs *ctx, struct sock *sk) {
     u64 ts = bpf_ktime_get_ns();
     struct birth_t b = {.ts = ts, .open_type = ACTIVE};
     births.update(&sk, &b);
     return 0;
 };
 
-static void get_basic_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
-    bpf_trace_printk("sock\\n");
+static void get_sk_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     u16 lport = sk->__sk_common.skc_num;
     u16 dport = sk->__sk_common.skc_dport;
     u16 family = sk->__sk_common.skc_family;
@@ -128,46 +125,23 @@ static void get_basic_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     }
 }
 
-static void get_tcp_sock_info(struct tcp_sock *tcp_sock, struct tcp_ipv4_event_t *event) {
-    bpf_trace_printk("tcp_sock\\n");
-    u64 bytes_received = 0, bytes_acked = 0;
-    u64 segs_in = 0, segs_out = 0;
-    u64 srtt_us = 0, rttvar_us = 0;
-    u64 mss_cache = 0, advmss = 0;
-    u64 max_window = 0, window_clamp = 0;
-    u64 lost_out = 0, sacked_out = 0, fackets_out = 0;
-    bytes_received = tcp_sock->bytes_received;
-    bytes_acked = tcp_sock->bytes_acked;
-    segs_in = tcp_sock->segs_in;
-    segs_out = tcp_sock->segs_out;
-    srtt_us = tcp_sock->srtt_us >> 3;
-    rttvar_us = tcp_sock->mdev_us >> 2;
-    mss_cache = tcp_sock->mss_cache;
-    advmss = tcp_sock->advmss;
-    max_window = tcp_sock->max_window;
-    window_clamp = tcp_sock->window_clamp;
-    lost_out = tcp_sock->lost_out;
-    sacked_out = tcp_sock->sacked_out;
-    fackets_out = tcp_sock->fackets_out;
-
-    event->ip_ver = 4;
-    event->bytes_received = bytes_received;
-    event->bytes_acked = bytes_acked;
-    event->segs_in = segs_in;
-    event->segs_out = segs_out;
-    event->srtt_us = srtt_us;
-    event->rttvar_us = rttvar_us;
-    event->mss_cache = mss_cache; 
-    event->advmss = advmss;
-    event->max_window = max_window;
-    event->window_clamp = window_clamp;
-    event->lost_out = lost_out;
-    event->sacked_out = sacked_out;
-    event->fackets_out = fackets_out;
+static void get_tsk_info(struct tcp_sock *tcp_sock, struct tcp_ipv4_event_t *event) {
+    event->bytes_received = tcp_sock->bytes_received;
+    event->bytes_acked = tcp_sock->bytes_acked;
+    event->segs_in = tcp_sock->segs_in;
+    event->segs_out = tcp_sock->segs_out;
+    event->srtt_us = tcp_sock->srtt_us >> 3;
+    event->rttvar_us = tcp_sock->mdev_us >> 2;
+    event->mss_cache = tcp_sock->mss_cache;
+    event->advmss = tcp_sock->advmss;
+    event->max_window = tcp_sock->max_window;
+    event->window_clamp = tcp_sock->window_clamp;
+    event->lost_out = tcp_sock->lost_out;
+    event->sacked_out = tcp_sock->sacked_out;
+    event->fackets_out = tcp_sock->fackets_out;
 }
 
-static void get_inet_connection_sock_info(struct inet_connection_sock *sk, struct tcp_ipv4_event_t *event) {
-    bpf_trace_printk("inet_connection_sock\\n");
+static void get_icsk_info(struct inet_connection_sock *sk, struct tcp_ipv4_event_t *event) {
     struct tcp_info info;
     //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
     memset(&info, 0, sizeof info);
@@ -179,7 +153,6 @@ static void get_inet_connection_sock_info(struct inet_connection_sock *sk, struc
 }
 
 static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
-    bpf_trace_printk("birth\\n");
     u64 ts = 0, open_type = 0;
     u64 now = bpf_ktime_get_ns();
     if (b != NULL) {
@@ -194,27 +167,29 @@ static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
     }
 }
 
-int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
-{
+int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
     if (state != TCP_CLOSE) {
         return 0;
     }
 
     struct tcp_ipv4_event_t event;
     memset(&event, 0, sizeof event);
-    get_basic_info(sk, &event);
+    
+    get_sk_info(sk, &event);
 
     struct birth_t *b;
     b = births.lookup(&sk);
     get_birth_info(b, &event);
 
     struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
-    get_tcp_sock_info(tcp_sock, &event);
+    get_tsk_info(tcp_sock, &event);
  
     struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
-    get_inet_connection_sock_info(icsk, &event);
+    get_icsk_info(icsk, &event);
 
+    event.ip_ver = 4;
     event.event_type = CLOSED;
+    event.sample_rate = 1;
     tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
 
     if (b != NULL) {
