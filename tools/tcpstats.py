@@ -98,23 +98,6 @@ struct tcp_ipv4_event_t {
 };
 BPF_PERF_OUTPUT(tcp_ipv4_events);
 
-int kretprobe__inet_csk_accept(struct pt_regs *ctx) {
-    struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
-    if (sk == NULL)
-        return 0;
-    u64 ts = bpf_ktime_get_ns();
-    struct birth_t b = {.ts = ts, .open_type = PASSIVE};
-    births.update(&sk, &b);
-    return 0;
-}
-
-int trace_connect(struct pt_regs *ctx, struct sock *sk) {
-    u64 ts = bpf_ktime_get_ns();
-    struct birth_t b = {.ts = ts, .open_type = ACTIVE};
-    births.update(&sk, &b);
-    return 0;
-};
-
 static void get_sk_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     u16 lport = sk->__sk_common.skc_num;
     u16 dport = sk->__sk_common.skc_dport;
@@ -168,90 +151,70 @@ static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
     }
 }
 
+static struct birth_t * trace_event(struct pt_regs *ctx, struct sock *sk, u64 event_type) {
+    bpf_trace_printk("%d\\n", event_type);
+    struct tcp_ipv4_event_t event;
+    memset(&event, 0, sizeof event);
+    
+    get_sk_info(sk, &event);
+
+    struct birth_t *b;
+    b = births.lookup(&sk);
+    get_birth_info(b, &event);
+
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+    get_tsk_info(tcp_sock, &event);
+ 
+    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    get_icsk_info(icsk, &event);
+
+    event.ip_ver = 4;
+    event.event_type = event_type;
+    event.sample_rate = 1;
+    event.ts_us = bpf_ktime_get_ns() / 1000;
+    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    
+    return b;
+}
+
+int kretprobe__inet_csk_accept(struct pt_regs *ctx) {
+    struct sock *sk = (struct sock *)PT_REGS_RC(ctx);
+    if (sk == NULL)
+        return 0;
+    u64 ts = bpf_ktime_get_ns();
+    struct birth_t b = {.ts = ts, .open_type = PASSIVE};
+    births.update(&sk, &b);
+    return 0;
+}
+
+int trace_connect(struct pt_regs *ctx, struct sock *sk) {
+    u64 ts = bpf_ktime_get_ns();
+    struct birth_t b = {.ts = ts, .open_type = ACTIVE};
+    births.update(&sk, &b);
+    return 0;
+};
+
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
     if (state != TCP_CLOSE) {
         return 0;
     }
-
-    bpf_trace_printk("CLOSED\\n");
-    struct tcp_ipv4_event_t event;
-    memset(&event, 0, sizeof event);
-    
-    get_sk_info(sk, &event);
-
     struct birth_t *b;
-    b = births.lookup(&sk);
-    get_birth_info(b, &event);
-
-    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
-    get_tsk_info(tcp_sock, &event);
- 
-    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
-    get_icsk_info(icsk, &event);
-
-    event.ip_ver = 4;
-    event.event_type = CLOSED;
-    event.sample_rate = 1;
-    event.ts_us = bpf_ktime_get_ns() / 1000;
-    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
-
+    b = trace_event(ctx, sk, CLOSED);
     if (b != NULL) {
         births.delete(&sk);
     }
-
     return 0;
 };
 
 int trace_retransmit(struct pt_regs *ctx, struct sock *sk) {
-    bpf_trace_printk("RETRANSMIT\\n");
-    struct tcp_ipv4_event_t event;
-    memset(&event, 0, sizeof event);
-    
-    get_sk_info(sk, &event);
-
-    struct birth_t *b;
-    b = births.lookup(&sk);
-    get_birth_info(b, &event);
-
-    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
-    get_tsk_info(tcp_sock, &event);
- 
-    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
-    get_icsk_info(icsk, &event);
-
-    event.ip_ver = 4;
-    event.event_type = RETRANSMIT;
-    event.sample_rate = 1;
-    event.ts_us = bpf_ktime_get_ns() / 1000;
-    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    trace_event(ctx, sk, RETRANSMIT);
     return 0;
 }
 
 int trace_tlp(struct pt_regs *ctx, struct sock *sk) {
-    bpf_trace_printk("TLP\\n");
-    struct tcp_ipv4_event_t event;
-    memset(&event, 0, sizeof event);
-    
-    get_sk_info(sk, &event);
-
-    struct birth_t *b;
-    b = births.lookup(&sk);
-    get_birth_info(b, &event);
-
-    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
-    get_tsk_info(tcp_sock, &event);
- 
-    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
-    get_icsk_info(icsk, &event);
-
-    event.ip_ver = 4;
-    event.event_type = TLP;
-    event.sample_rate = 1;
-    event.ts_us = bpf_ktime_get_ns() / 1000;
-    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    trace_event(ctx, sk, TLP);
     return 0;
 }
-
 
 """
 
