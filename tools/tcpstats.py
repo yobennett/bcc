@@ -194,6 +194,21 @@ void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
 }
 */
 
+static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
+    u64 ts = 0, open_type = 0;
+    u64 now = bpf_ktime_get_ns();
+    if (b != NULL) {
+        ts = b->ts;
+        open_type = b->open_type;
+        if (ts != 0) {
+            event->span_us = (now - ts) / 1000;
+        }
+        if (open_type != 0) {
+            event->open_type = open_type;
+        }
+    }
+}
+
 int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 {
     if (state != TCP_CLOSE) {
@@ -206,19 +221,8 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
     struct birth_t *b;
     b = births.lookup(&sk);
-    u64 ts = 0, open_type = 0;
-    u64 now = bpf_ktime_get_ns();
-    if (b != NULL) {
-        ts = b->ts;
-        open_type = b->open_type;
-        if (ts != 0) {
-            event.span_us = (now - ts) / 1000;
-        }
-        if (open_type != 0) {
-            event.open_type = open_type;
-        }
-    }
-    
+    get_birth_info(b, &event);
+
     event.event_type = CLOSED;
     tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
 
