@@ -125,20 +125,20 @@ static void get_sk_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     }
 }
 
-static void get_tsk_info(struct tcp_sock *tcp_sock, struct tcp_ipv4_event_t *event) {
-    event->bytes_received = tcp_sock->bytes_received;
-    event->bytes_acked = tcp_sock->bytes_acked;
-    event->segs_in = tcp_sock->segs_in;
-    event->segs_out = tcp_sock->segs_out;
-    event->srtt_us = tcp_sock->srtt_us >> 3;
-    event->rttvar_us = tcp_sock->mdev_us >> 2;
-    event->mss_cache = tcp_sock->mss_cache;
-    event->advmss = tcp_sock->advmss;
-    event->max_window = tcp_sock->max_window;
-    event->window_clamp = tcp_sock->window_clamp;
-    event->lost_out = tcp_sock->lost_out;
-    event->sacked_out = tcp_sock->sacked_out;
-    event->fackets_out = tcp_sock->fackets_out;
+static void get_tsk_info(struct tcp_sock *sk, struct tcp_ipv4_event_t *event) {
+    event->bytes_received = sk->bytes_received;
+    event->bytes_acked = sk->bytes_acked;
+    event->segs_in = sk->segs_in;
+    event->segs_out = sk->segs_out;
+    event->srtt_us = sk->srtt_us >> 3;
+    event->rttvar_us = sk->mdev_us >> 2;
+    event->mss_cache = sk->mss_cache;
+    event->advmss = sk->advmss;
+    event->max_window = sk->max_window;
+    event->window_clamp = sk->window_clamp;
+    event->lost_out = sk->lost_out;
+    event->sacked_out = sk->sacked_out;
+    event->fackets_out = sk->fackets_out;
 }
 
 static void get_icsk_info(struct inet_connection_sock *sk, struct tcp_ipv4_event_t *event) {
