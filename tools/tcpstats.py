@@ -166,20 +166,17 @@ static void get_tcp_sock_info(struct tcp_sock *tcp_sock, struct tcp_ipv4_event_t
     event->fackets_out = fackets_out;
 }
 
-/*
-void get_tcp_info_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+static void get_inet_connection_sock_info(struct inet_connection_sock *sk, struct tcp_ipv4_event_t *event) {
     bpf_trace_printk("inet_connection_sock\\n");
     struct tcp_info info;
     //int hz_to_usecs_num = 4000, hz_to_usecs_den = 1;
-    const struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
     memset(&info, 0, sizeof info);
-    info.tcpi_rto = (icsk->icsk_rto * 4000) / 1;
-    info.tcpi_ato = (icsk->icsk_ack.ato * 4000) / 1;
+    info.tcpi_rto = (sk->icsk_rto * 4000) / 1;
+    info.tcpi_ato = (sk->icsk_ack.ato * 4000) / 1;
     
     event->tcpi_rto = info.tcpi_rto;
     event->tcpi_ato = info.tcpi_ato;
 }
-*/
 
 static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
     bpf_trace_printk("birth\\n");
@@ -213,6 +210,9 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
 
     struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
     get_tcp_sock_info(tcp_sock, &event);
+ 
+    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    get_inet_connection_sock_info(icsk, &event);
 
     event.event_type = CLOSED;
     tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
@@ -297,12 +297,10 @@ b["tcp_ipv4_events"].open_perf_buffer(on_tcp_ipv4_event, page_cnt=64)
 while True:
     try:
         if not exiting:
-            print('sleeping {}s'.format(wakeup_s))
             sleep(wakeup_s)
     except KeyboardInterrupt:
         exiting = True
     else:
-        print('polling with {}s timeout'.format(poll_timeout))
         b.kprobe_poll(timeout=poll_timeout)
         if exiting:
             exit(0)
