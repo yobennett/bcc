@@ -128,10 +128,8 @@ static void get_basic_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     }
 }
 
-/*
-void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
+static void get_tcp_sock_info(struct tcp_sock *tcp_sock, struct tcp_ipv4_event_t *event) {
     bpf_trace_printk("tcp_sock\\n");
-    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
     u64 bytes_received = 0, bytes_acked = 0;
     u64 segs_in = 0, segs_out = 0;
     u64 srtt_us = 0, rttvar_us = 0;
@@ -167,7 +165,6 @@ void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
     event->sacked_out = sacked_out;
     event->fackets_out = fackets_out;
 }
-*/
 
 /*
 void get_tcp_info_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
@@ -184,17 +181,8 @@ void get_tcp_info_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
 }
 */
 
-/*
-void get_tcp_sock_info(struct sock *sk, struct tcp_ipv4_event_t *event) {
-    
-    if (family == AF_INET) {
-        event.span_us = (now - ts) / 1000;
-        tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
-    }
-}
-*/
-
 static void get_birth_info(struct birth_t *b, struct tcp_ipv4_event_t *event) {
+    bpf_trace_printk("birth\\n");
     u64 ts = 0, open_type = 0;
     u64 now = bpf_ktime_get_ns();
     if (b != NULL) {
@@ -222,6 +210,9 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state)
     struct birth_t *b;
     b = births.lookup(&sk);
     get_birth_info(b, &event);
+
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+    get_tcp_sock_info(tcp_sock, &event);
 
     event.event_type = CLOSED;
     tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
