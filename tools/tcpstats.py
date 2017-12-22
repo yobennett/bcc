@@ -73,6 +73,7 @@ BPF_HASH(births, struct sock *, struct birth_t);
 struct tcp_ipv4_event_t {
     u64 event_type;
     u64 sample_rate;
+    u64 ts_us; /* timestamp */
     u64 ip_ver;
     u64 saddr;
     u64 daddr;
@@ -172,6 +173,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
         return 0;
     }
 
+    bpf_trace_printk("CLOSED\\n");
     struct tcp_ipv4_event_t event;
     memset(&event, 0, sizeof event);
     
@@ -190,6 +192,7 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
     event.ip_ver = 4;
     event.event_type = CLOSED;
     event.sample_rate = 1;
+    event.ts_us = bpf_ktime_get_ns() / 1000;
     tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
 
     if (b != NULL) {
@@ -199,6 +202,55 @@ int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
     return 0;
 };
 
+int trace_retransmit(struct pt_regs *ctx, struct sock *sk) {
+    bpf_trace_printk("RETRANSMIT\\n");
+    struct tcp_ipv4_event_t event;
+    memset(&event, 0, sizeof event);
+    
+    get_sk_info(sk, &event);
+
+    struct birth_t *b;
+    b = births.lookup(&sk);
+    get_birth_info(b, &event);
+
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+    get_tsk_info(tcp_sock, &event);
+ 
+    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    get_icsk_info(icsk, &event);
+
+    event.ip_ver = 4;
+    event.event_type = RETRANSMIT;
+    event.sample_rate = 1;
+    event.ts_us = bpf_ktime_get_ns() / 1000;
+    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    return 0;
+}
+
+int trace_tlp(struct pt_regs *ctx, struct sock *sk) {
+    bpf_trace_printk("TLP\\n");
+    struct tcp_ipv4_event_t event;
+    memset(&event, 0, sizeof event);
+    
+    get_sk_info(sk, &event);
+
+    struct birth_t *b;
+    b = births.lookup(&sk);
+    get_birth_info(b, &event);
+
+    struct tcp_sock *tcp_sock = (struct tcp_sock *)sk; 
+    get_tsk_info(tcp_sock, &event);
+ 
+    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+    get_icsk_info(icsk, &event);
+
+    event.ip_ver = 4;
+    event.event_type = TLP;
+    event.sample_rate = 1;
+    event.ts_us = bpf_ktime_get_ns() / 1000;
+    tcp_ipv4_events.perf_submit(ctx, &event, sizeof(event));
+    return 0;
+}
 
 
 """
@@ -207,6 +259,7 @@ class TCPIPv4Event(ct.Structure):
     _fields_ = [
         ("event_type", ct.c_ulonglong),
         ("sample_rate", ct.c_ulonglong),
+        ("ts_us", ct.c_ulonglong),
         ("ip_ver", ct.c_ulonglong),
         ("saddr", ct.c_ulonglong),
         ("daddr", ct.c_ulonglong),
@@ -232,9 +285,10 @@ class TCPIPv4Event(ct.Structure):
 
 def on_tcp_ipv4_event(cpu, data, size):
     event = ct.cast(data, ct.POINTER(TCPIPv4Event)).contents
-    print('event_type={} sample_rate={} ip_ver={} s={}:{} d={}:{} span={}us open_type={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}us tcpi_ato={}us'.format(
+    print('event_type={} sample_rate={} ts={}us ip_ver={} s={}:{} d={}:{} span={}us open_type={} bytes_received={} bytes_acked={} segs_in={} segs_out={} srtt_us={} rttvar_us={} mss_cache={} advmss={} max_window={}, window_clamp={} lost_out={} sacked_out={}, fackets_out={} tcpi_rto={}us tcpi_ato={}us'.format(
         event.event_type,
         event.sample_rate,
+        event.ts_us,
         event.ip_ver, 
         inet_ntop(AF_INET, pack("I", event.saddr)), 
         event.ports >> 32,
@@ -265,9 +319,8 @@ exiting = False
 b = BPF(text=bpf_text)
 b.attach_kprobe(event="tcp_v4_connect", fn_name="trace_connect")
 b.attach_kprobe(event="tcp_v6_connect", fn_name="trace_connect")
-#b.attach_kprobe(event="tcp_retransmit_skb", fn_name="trace_retransmit")
-#b.attach_kprobe(event="tcp_send_loss_probe", fn_name="trace_tlp")
-
+b.attach_kprobe(event="tcp_retransmit_skb", fn_name="trace_retransmit")
+b.attach_kprobe(event="tcp_send_loss_probe", fn_name="trace_tlp")
 b["tcp_ipv4_events"].open_perf_buffer(on_tcp_ipv4_event, page_cnt=64)
 while True:
     try:
